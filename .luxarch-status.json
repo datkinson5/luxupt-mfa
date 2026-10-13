@@ -1076,24 +1076,24 @@
         },
         {
           "rule": "fw.enums_in_enum_model",
-          "status": "PASS",
+          "status": "FAIL",
           "since": "0.68.0",
-          "violations": 0,
+          "violations": 1,
           "deferred": false,
           "inert": false,
           "inert_reason": "",
-          "fix": "",
+          "fix": "Move the Enum class to app/models/enum_model.py (or enums.py), or to its domain submodule of the package app/models/enum_model/ (import from the submodule, no re-export), and import it where used \u2014 enums cross every layer by design (ADR-001) so they have one home, and a stray enum is caught only by ricochet off another rule (or not at all, if only a core/service imports it). If it's genuinely NOT a model enum (error-infrastructure core owns, not DB-persisted, and moving it makes an import cycle), exempt it: [allowlist].enum_placement = [{ enum, evidence }]. See --playbook enum-typing.",
           "example": ""
         },
         {
           "rule": "fw.enums_declared",
-          "status": "PASS",
+          "status": "FAIL",
           "since": "0.69.0",
-          "violations": 0,
+          "violations": 1,
           "deferred": false,
           "inert": false,
           "inert_reason": "",
-          "fix": "",
+          "fix": "Add each enum to `[enums].declared` in .luxarch.toml. Placement (enums_in_enum_model) gives it one home; declaration is what makes the value/column rules examine it \u2014 without it the enum is invisible to enforcement, so a move without a declaration only relocates the problem. Declaring a column-less enum is harmless (those rules stay inert for it). See --playbook enum-typing.",
           "example": ""
         },
         {
@@ -1450,13 +1450,13 @@
         },
         {
           "rule": "fw.dto_in_schemas",
-          "status": "PASS",
+          "status": "FAIL",
           "since": "0.155.0",
-          "violations": 0,
+          "violations": 2,
           "deferred": false,
           "inert": false,
           "inert_reason": "",
-          "fix": "",
+          "fix": "Move the DTO to `app/schemas/<domain>_schema.py` and import it where it's built. A DTO defined inside a service is invisible to the schema-scanning rules \u2014 most importantly fw.enum_dto_fields_enum_typed \u2014 so its closed-set fields go unchecked and the enum family reads green over untyped data. Relocation is mechanical: the type moves, the boundary stays typed. Do this BEFORE fw.no_inline_imports \u2014 a lazy import usually exists to dodge the circular dependency a misplaced DTO created, and lifts on its own once the DTO moves. Internal value types never returned outward are not flagged. See --playbook burn-down-order \u00a72.",
           "example": ""
         },
         {
@@ -1477,7 +1477,7 @@
           "violations": 0,
           "deferred": false,
           "inert": true,
-          "inert_reason": "the harness isolates by holding ONE connection and rolling it back (tests/conftest.py:204), so a pooled test engine cannot work here \u2014 each pytest-asyncio test gets its own loop and a pooled connection belongs to the loop that opened it. **This INERT is the correct END STATE for such a harness, not a todo.** Do NOT migrate to DELETE/TRUNCATE-per-test to satisfy this rule: luxlint's test.no_handrolled_cleanup exists to red exactly that, and rollback isolation is the better pattern (faster, no table-ordering bugs, nothing to forget). An earlier version of this message named that migration as the prerequisite and was wrong \u2014 it pointed at something another fleet guard forbids. Measured, pursuing pooling here costs you: 0 failures on NullPool, 139 pooled, 366 pooled+dispose. And you lose nothing in DETECTION \u2014 the cross-session visibility class this rule guards is caught by durability locks that read on a SEPARATE connection, which works whatever the pool class. Pool the APP engine (fw.dev_prod_pool_parity); leave the test engine alone.",
+          "inert_reason": "the harness isolates by holding ONE connection and rolling it back (tests/conftest.py:202), so a pooled test engine cannot work here \u2014 each pytest-asyncio test gets its own loop and a pooled connection belongs to the loop that opened it. **This INERT is the correct END STATE for such a harness, not a todo.** Do NOT migrate to DELETE/TRUNCATE-per-test to satisfy this rule: luxlint's test.no_handrolled_cleanup exists to red exactly that, and rollback isolation is the better pattern (faster, no table-ordering bugs, nothing to forget). An earlier version of this message named that migration as the prerequisite and was wrong \u2014 it pointed at something another fleet guard forbids. Measured, pursuing pooling here costs you: 0 failures on NullPool, 139 pooled, 366 pooled+dispose. And you lose nothing in DETECTION \u2014 the cross-session visibility class this rule guards is caught by durability locks that read on a SEPARATE connection, which works whatever the pool class. Pool the APP engine (fw.dev_prod_pool_parity); leave the test engine alone.",
           "fix": "",
           "example": ""
         },
@@ -1626,13 +1626,13 @@
         },
         {
           "rule": "fw.trusted_host_enforced",
-          "status": "FAIL",
+          "status": "PASS",
           "since": "0.280.0",
-          "violations": 1,
+          "violations": 0,
           "deferred": false,
           "inert": false,
           "inert_reason": "",
-          "fix": "Install the emitted middleware on the app the entry point serves, over a REQUIRED setting: `luxarch --emit trusted-host > app/core/trusted_host.py`, declare `ALLOWED_HOSTS: AllowedHosts` (no default) on the settings class, and `app.add_middleware(AllowedHostsMiddleware, allowed_hosts=settings.ALLOWED_HOSTS, health_paths=(...))` unconditionally. The hostnames go in each `.env.<env>` (`ALLOWED_HOSTS=dev.example.com` in `.env.dev`), with the key documented in `.env.example`: never hardcode them in code, and never ask for them. An nginx `default_server` returning 444 is recommended defence in depth, not a substitute. See `luxarch --doc FLEET-BUILD-DEPLOY-STANDARD` \"Trusted hosts\".",
+          "fix": "",
           "example": ""
         },
         {
@@ -1725,13 +1725,13 @@
         },
         {
           "rule": "fw.admin_bootstrap_safe",
-          "status": "FAIL",
+          "status": "PASS",
           "since": "0.280.0",
-          "violations": 2,
+          "violations": 0,
           "deferred": false,
           "inert": false,
           "inert_reason": "",
-          "fix": "luxarch --doc FLEET-ADMIN-BOOTSTRAP-STANDARD is the standard; `luxarch --emit admin-bootstrap` (+ `-crud`, `-view`, `-router`, `-cli`, `-form`) is the implementation: no default password anywhere (the env-example key present but EMPTY), INITIAL_ADMIN_EMAIL (or _USERNAME) / INITIAL_ADMIN_PASSWORD(_FILE) applied only while the users table is empty and with must_change_password set, otherwise /setup gated by a one-time token from the log, recovery via `python -m app.cli reset-password <user>`, and login sends a must_change_password user to the change form. A red here is aligned, not waived.",
+          "fix": "",
           "example": ""
         },
         {
@@ -1758,13 +1758,13 @@
         },
         {
           "rule": "fw.single_use_claim_atomic",
-          "status": "FAIL",
+          "status": "INERT",
           "since": "0.287.0",
-          "violations": 1,
+          "violations": 0,
           "deferred": false,
-          "inert": false,
-          "inert_reason": "",
-          "fix": "Claim it in one statement that only matches an available row: `update(Model).where(Model.token_hash == h, Model.used_at.is_(None), Model.expires_at > now).values(used_at=now).returning(Model)`, and refuse when it returns no row. Or load the row with `.with_for_update()` before checking and writing it. See --doc FLEET-AUTH-SESSION-STANDARD \u00a71.2.",
+          "inert": true,
+          "inert_reason": "no code claims a single-use record (no check-then-write on a row, no marker write) \u2014 nothing to judge",
+          "fix": "",
           "example": ""
         },
         {
@@ -1791,11 +1791,11 @@
         }
       ],
       "summary": {
-        "PASS": 133,
+        "PASS": 132,
         "FAIL": 3,
         "XFAIL": 0,
         "XPASS": 0,
-        "INERT": 26
+        "INERT": 27
       }
     }
   ],
@@ -2001,24 +2001,24 @@
       },
       {
         "rule": "repo.deploy_tag_is_immutable",
-        "status": "FAIL",
+        "status": "PASS",
         "since": "0.197.0",
-        "violations": 3,
+        "violations": 0,
         "deferred": false,
         "inert": false,
         "inert_reason": "",
-        "fix": "pin an immutable identifier in `.env.<env>` (compose) or the overlay's `images: newTag:` (kustomize): `sha-<commit>` (every build, no ceremony \u2014 the sha is already computed for BUILD_COMMIT) or `TAG=<version>` for a cut release. A moving tag cannot be a deployment record: you cannot say which bits are running and you cannot roll back to them. `luxarch --emit image-block` prints the canonical scheme, where `:dev` survives only as a human-readable alias nothing pins. See --doc FLEET-BUILD-DEPLOY-STANDARD.",
+        "fix": "",
         "example": ""
       },
       {
         "rule": "repo.release_scans_candidate",
-        "status": "FAIL",
+        "status": "PASS",
         "since": "0.250.0",
-        "violations": 3,
+        "violations": 0,
         "deferred": false,
         "inert": false,
         "inert_reason": "",
-        "fix": "Re-emit `luxarch --emit image-block` (v14): its `release` builds, `docker save`s the tag it is about to push, runs `luxaudit --image-archive` (luxaudit >= 0.13.0) on THAT archive with THIS repo as `/repo` (`-v \"$(CURDIR)\":/repo`; `$(PWD)` is the caller's directory) and only then pushes. Multi-arch (`PLATFORMS`): push a `candidate-<commit>` tag nothing pins, pin its digest, pull + save + scan each platform by that digest, then `docker buildx imagetools create` the release tag from it. See --doc FLEET-BUILD-DEPLOY-STANDARD, Architectures.",
+        "fix": "",
         "example": ""
       },
       {
@@ -2243,13 +2243,13 @@
       },
       {
         "rule": "repo.images_on_fleet_line",
-        "status": "FAIL",
+        "status": "PASS",
         "since": "0.282.0",
-        "violations": 1,
+        "violations": 0,
         "deferred": false,
         "inert": false,
         "inert_reason": "",
-        "fix": "bound every image to a version line: `nginx:1.31-alpine`, not `nginx:alpine` or `:latest`. Where the fleet keeps a line (`luxarch --fleet-versions`), use that line; patches float under it, which is the point, and a move to the next line is a deliberate fleet bump the owner makes in ONE home. No digests, no exact freezes. A data-bearing image (postgres and its extension images) is judged only for being unbounded: its major is a dump-and-restore. See --doc FLEET-BUILD-DEPLOY-STANDARD, 'Image lines'.",
+        "fix": "",
         "example": ""
       },
       {
@@ -2540,20 +2540,20 @@
       }
     ],
     "summary": {
-      "PASS": 60,
-      "FAIL": 5,
+      "PASS": 63,
+      "FAIL": 2,
       "XFAIL": 0,
       "XPASS": 0,
       "INERT": 2
     }
   },
   "summary": {
-    "PASS": 193,
-    "FAIL": 8,
+    "PASS": 195,
+    "FAIL": 5,
     "XFAIL": 0,
     "XPASS": 0,
-    "INERT": 28
+    "INERT": 29
   },
-  "commit": "32f1012354451641c13390fb3130cd3d5be76836",
-  "generated_at": "2026-10-13T02:32:30Z"
+  "commit": "eadc189de6918577d8f4d39eecb6d279f79fa165",
+  "generated_at": "2026-10-13T03:36:39Z"
 }
