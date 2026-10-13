@@ -467,6 +467,8 @@ onboard-check: ## Prove the repo is onboarded: all three guards ON + HONEST, NOT
 # head for real, then diffs the result against the models and fails on ANY structural diff -- additive
 # included, because here a missing table shows up as `add_table` and a destructive-only check would
 # wave it through. Verifier: scripts/verify_migration_chain.py (luxarch --emit migration-chain).
+# ALLOWED_HOSTS is required at config import (no default); this container serves nothing, so any
+# name satisfies it.
 VERIFY_DB_DIR      ?= $(CURDIR)/.cache/luxupt-verify-db
 VERIFY_DATABASE_URL ?= sqlite+aiosqlite:///$(VERIFY_DB_DIR)/timelapse.db
 
@@ -477,6 +479,7 @@ db-verify: ## FRESH EMPTY DB -> alembic upgrade head -> diff vs models (fails on
 	docker build -q -f Dockerfile.test -t $(TEST_DEPS_IMAGE) . >/dev/null; \
 	docker run --rm -v "$(CURDIR)":/w -w /w -v $(VERIFY_DB_DIR):$(VERIFY_DB_DIR) \
 	  --env DATABASE_DIR=$(VERIFY_DB_DIR) --env VERIFY_DATABASE_URL=$(VERIFY_DATABASE_URL) \
+	  --env ALLOWED_HOSTS=db-verify.invalid \
 	  $(TEST_DEPS_IMAGE) sh -c 'cd /w/app && PYTHONPATH=/w alembic upgrade head && cd /w && PYTHONPATH=/w python scripts/verify_migration_chain.py'; \
 	status=$$?; rm -rf $(VERIFY_DB_DIR); exit $$status
 
