@@ -28,7 +28,13 @@ class CRUDUser(CRUDBase[User, UserCreate, UserCreate]):
         return result.scalar_one_or_none()
 
     async def create_user(
-        self, db: AsyncSession, *, username: str, password: str, is_admin: bool = True
+        self,
+        db: AsyncSession,
+        *,
+        username: str,
+        password: str,
+        is_admin: bool = True,
+        must_change_password: bool = False,
     ) -> User:
         """Create a new user with hashed password."""
         password_hash = hash_password(password)
@@ -36,6 +42,7 @@ class CRUDUser(CRUDBase[User, UserCreate, UserCreate]):
             username=username,
             password_hash=password_hash,
             is_admin=is_admin,
+            must_change_password=must_change_password,
         )
         db.add(user)
         await db.flush()
@@ -50,12 +57,18 @@ class CRUDUser(CRUDBase[User, UserCreate, UserCreate]):
         username: str | None = None,
         password: str | None = None,
         is_admin: bool | None = None,
+        must_change_password: bool | None = None,
     ) -> User:
         """Apply field updates to a user (hashing the password if given) and flush."""
         if username is not None:
             user.username = username
         if password is not None:
             user.password_hash = hash_password(password)
+            user.session_version += (
+                1  # a new password ends the sessions issued before it
+            )
+        if must_change_password is not None:
+            user.must_change_password = must_change_password
         if is_admin is not None:
             user.is_admin = is_admin
         db.add(user)
@@ -77,12 +90,24 @@ class CRUDUser(CRUDBase[User, UserCreate, UserCreate]):
         user = await self.get_by_username(db, username)
         if not user:
             return None
-        # Env-sourced users have placeholder hash - can't authenticate via DB
-        if user.password_hash == "ENV_MANAGED":  # a sentinel, not a credential
-            return None
         if not await self.verify_password(password, user.password_hash):
             return None
         return user
+
+    async def get_retired_env_logins(self, db: AsyncSession) -> list[str]:
+        """Usernames still on the retired WEB_PASSWORD login's placeholder hash, which verifies
+        against nothing: they sign in again only after reset-password."""
+        result = await db.execute(
+            select(User.username).where(User.password_hash == "ENV_MANAGED")
+        )
+        return list(result.scalars().all())
+
+    async def count_admins(self, db: AsyncSession) -> int:
+        """How many users are administrators."""
+        result = await db.execute(
+            select(func.count(User.id)).where(User.is_admin.is_(True))
+        )
+        return result.scalar() or 0
 
     async def user_exists(self, db: AsyncSession) -> bool:
         """Check if any users exist in the database."""
@@ -100,46 +125,6 @@ class CRUDUser(CRUDBase[User, UserCreate, UserCreate]):
         await db.flush()
         await db.refresh(user)
         return user
-
-    async def sync_env_user(self, db: AsyncSession, username: str) -> User:
-        """Ensure env user exists in database for tracking purposes.
-
-        Creates the user if it doesn't exist, or updates username if changed.
-        Password hash is a placeholder since auth is done against env vars.
-        """
-        # Find existing env user
-        result = await db.execute(
-            select(User).where(User.auth_source == User.SOURCE_ENV)
-        )
-        env_user = result.scalar_one_or_none()
-
-        if env_user:
-            # Update username if changed
-            if env_user.username != username:
-                env_user.username = username
-                db.add(env_user)
-                await db.flush()
-                await db.refresh(env_user)
-            return env_user
-
-        # Create new env user record
-        env_user = User(
-            username=username,
-            password_hash="ENV_MANAGED",  # a sentinel placeholder, not a credential
-            is_admin=True,
-            auth_source=User.SOURCE_ENV,
-        )
-        db.add(env_user)
-        await db.flush()
-        await db.refresh(env_user)
-        return env_user
-
-    async def get_env_user(self, db: AsyncSession) -> User | None:
-        """Get the environment-managed user if it exists."""
-        result = await db.execute(
-            select(User).where(User.auth_source == User.SOURCE_ENV)
-        )
-        return result.scalar_one_or_none()
 
 
 user_crud = CRUDUser(User)

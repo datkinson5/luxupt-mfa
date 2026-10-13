@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Integer, String
+from sqlalchemy import Boolean, Integer, String, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
@@ -10,18 +10,13 @@ from app.db.types import UtcDateTime
 
 
 class User(Base, TimestampMixin):
-    """Represents a user for web interface authentication.
+    """A user of the web interface. The database is the only credential store.
 
-    Users can be created from two sources:
-    - "database": Credentials stored in the database (password_hash used)
-    - "env": Credentials from environment variables (password_hash is placeholder)
+    The first admin comes from INITIAL_ADMIN_* or /setup, and recovery is
+    ``python -m app.cli reset-password <username>`` (FLEET-ADMIN-BOOTSTRAP-STANDARD).
     """
 
     __tablename__ = "users"
-
-    # Auth source constants
-    SOURCE_DATABASE = "database"
-    SOURCE_ENV = "env"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(
@@ -29,15 +24,15 @@ class User(Base, TimestampMixin):
     )
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    auth_source: Mapped[str] = mapped_column(
-        String(32), default=SOURCE_DATABASE, nullable=False
+    # Set on a seeded, reset or admin-assigned password: the next sign-in goes to the change form.
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
+    # In every session token; bumped when the password changes, so older sessions stop working.
+    session_version: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
     )
     last_login_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
 
-    @property
-    def is_env_managed(self) -> bool:
-        """Check if this user is managed via environment variables."""
-        return self.auth_source == self.SOURCE_ENV
-
     def __repr__(self) -> str:
-        return f"<User(id={self.id}, username={self.username}, auth_source={self.auth_source})>"
+        return f"<User(id={self.id}, username={self.username})>"

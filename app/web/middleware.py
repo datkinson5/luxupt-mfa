@@ -14,10 +14,9 @@ from starlette.responses import Response
 
 from .auth import (
     COOKIE_NAME,
-    AuthService,
     is_https_request,
     needs_setup,
-    uses_env_auth,
+    session_user,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,6 +133,9 @@ class AuthRedirectMiddleware(BaseHTTPMiddleware):
 
     # Paths that don't require authentication
     PUBLIC_PATHS = {"/login", "/setup", "/health", "/metrics", "/static"}
+    # The only pages a user who must change their password can reach.
+    CHANGE_PASSWORD_PATH = "/account/password"
+    FORCED_CHANGE_PATHS = (CHANGE_PASSWORD_PATH, "/logout", "/static")
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
@@ -149,15 +151,27 @@ class AuthRedirectMiddleware(BaseHTTPMiddleware):
         if not token:
             return await self._handle_unauthenticated(request)
 
-        # Verify token
-        username = AuthService.verify_token(token)
-        if username is None:
-            # Invalid token - redirect to login and clear cookie
+        # The token must still belong to a user: a deleted or renamed user, a reset and a password
+        # change all end the sessions issued before them (session_user). Closed before the route
+        # opens its own session, never nested.
+        from app.db.database import get_db_context  # noqa: PLC0415
+
+        is_admin = must_change = False
+        async with get_db_context() as db:
+            user = await session_user(db, token)
+            if user is not None:
+                is_admin, must_change = user.is_admin, user.must_change_password
+        if user is None:
             response = await self._create_auth_redirect(request)
             response.delete_cookie(COOKIE_NAME)
             return response
+        request.state.session_is_admin = is_admin
 
-        # Token is valid, continue with request
+        # A seeded, reset or admin-assigned password is changed before ANY other page, not just
+        # at sign-in: the same cookie must not reach the rest of the app on a temporary password.
+        if must_change and not request.url.path.startswith(self.FORCED_CHANGE_PATHS):
+            return self._redirect(request, self.CHANGE_PASSWORD_PATH)
+
         return await call_next(request)
 
     def _is_htmx_request(self, request: Request) -> bool:
@@ -165,12 +179,7 @@ class AuthRedirectMiddleware(BaseHTTPMiddleware):
         return request.headers.get("HX-Request") == "true"
 
     async def _needs_setup_check(self) -> bool:
-        """Check if setup is needed (async database check)."""
-        # If env auth is configured, setup is never needed
-        if uses_env_auth():
-            return False
-
-        # Check database for users
+        """Check if setup is needed: there are no users yet."""
         from app.db.database import (  # noqa: PLC0415
             get_db_context,
         )
@@ -183,7 +192,10 @@ class AuthRedirectMiddleware(BaseHTTPMiddleware):
         # Check if setup is needed
         setup_needed = await self._needs_setup_check()
         redirect_url = "/setup" if setup_needed else "/login"
+        return self._redirect(request, redirect_url)
 
+    def _redirect(self, request: Request, redirect_url: str) -> Response:
+        """A full-page redirect: HX-Redirect for an HTMX request, else a 302."""
         if self._is_htmx_request(request):
             # For HTMX requests, use HX-Redirect header for full page navigation
             response = Response(status_code=200)

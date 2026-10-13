@@ -6,13 +6,23 @@ template signature, a bad context, or a broken template surfaces here as a 500.
 """
 
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.crud.user_crud import user_crud
+
+
+@pytest_asyncio.fixture
+async def a_user(db: AsyncSession) -> None:
+    """An installed instance: one user exists, so /login is the sign-in page, not /setup."""
+    await user_crud.create_user(db, username="someone", password="someone-password-1")
 
 
 class TestPublicPages:
     """Pages reachable without authentication (PUBLIC_PATHS in AuthRedirectMiddleware)."""
 
-    async def test_login_renders(self, client: AsyncClient) -> None:
+    async def test_login_renders(self, client: AsyncClient, a_user: None) -> None:
         resp = await client.get("/login")
         assert resp.status_code == 200, resp.text[:300]
         assert "text/html" in resp.headers["content-type"]
@@ -29,11 +39,20 @@ class TestAuthRedirects:
 
     @pytest.mark.parametrize("path", ["/cameras", "/timelapses", "/images", "/system"])
     async def test_protected_page_redirects_when_anonymous(
-        self, client: AsyncClient, path: str
+        self, client: AsyncClient, a_user: None, path: str
     ) -> None:
         resp = await client.get(path, follow_redirects=False)
         assert resp.status_code in (302, 303), f"{path}: {resp.status_code}"
         assert "/login" in resp.headers.get("location", "")
+
+    @pytest.mark.parametrize("path", ["/login", "/cameras"])
+    async def test_no_users_redirects_to_setup(
+        self, client: AsyncClient, path: str
+    ) -> None:
+        # A fresh install has nobody to sign in as: the way in is /setup.
+        resp = await client.get(path, follow_redirects=False)
+        assert resp.status_code in (302, 303), f"{path}: {resp.status_code}"
+        assert resp.headers.get("location", "") == "/setup"
 
 
 class TestAuthenticatedPages:

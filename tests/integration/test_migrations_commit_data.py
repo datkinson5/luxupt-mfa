@@ -51,3 +51,32 @@ def test_timestamp_shift_is_committed(
         ).fetchone()
     assert version != BEFORE_SHIFT
     assert stored == "2026-10-09 05:33:36.220867", "shift stamped but not committed"
+
+
+BEFORE_ADMIN_BOOTSTRAP = "c4e7b1a90f22"
+
+
+def test_admin_bootstrap_migration_round_trips_the_env_account(tmp_path: Path) -> None:
+    # 5b8e2d71c4a9 drops auth_source. A downgrade that re-added it as 'database' everywhere left
+    # the previous release unable to find its env account: its startup inserted WEB_USERNAME
+    # again and failed on the unique username, so a rollback could not start.
+    db_file = tmp_path / "timelapse.db"
+    cfg = _config(f"sqlite+aiosqlite:///{db_file}")
+    command.upgrade(cfg, BEFORE_ADMIN_BOOTSTRAP)
+    with closing(sqlite3.connect(db_file)) as conn, conn:
+        conn.execute(
+            "INSERT INTO users (username, password_hash, is_admin, auth_source) "
+            "VALUES ('admin', 'ENV_MANAGED', 1, 'env'), ('db-user', '$argon2id$x', 0, 'database')"
+        )
+
+    command.upgrade(cfg, "head")
+    with closing(sqlite3.connect(db_file)) as reader:
+        upgraded = dict(
+            reader.execute("SELECT username, must_change_password FROM users")
+        )
+    assert upgraded == {"admin": 1, "db-user": 0}
+
+    command.downgrade(cfg, BEFORE_ADMIN_BOOTSTRAP)
+    with closing(sqlite3.connect(db_file)) as reader:
+        sources = dict(reader.execute("SELECT username, auth_source FROM users"))
+    assert sources == {"admin": "env", "db-user": "database"}

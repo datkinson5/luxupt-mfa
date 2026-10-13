@@ -13,8 +13,8 @@ The DB harness is luxlint's canonical one (`luxlint --emit-config conftest`), ad
 
 Env is set BEFORE importing anything under ``app``: ``app/db/database.py`` builds its engine from
 ``DATABASE_DIR`` at import time, so setting it here keeps even the never-used import-time engine
-off the dev database. ``WEB_USERNAME``/``WEB_PASSWORD`` enable env-auth so the client can log in
-through the REAL login route without seeding DB users.
+off the dev database. ``auth_client`` seeds one database user and logs in through the REAL login
+route (the database is the only credential store).
 """
 
 import asyncio
@@ -67,8 +67,6 @@ os.environ.setdefault(
 )
 # The suite's client sends Host: test (base_url https://test); localhost for anything in-process.
 os.environ.setdefault("ALLOWED_HOSTS", "test,localhost,127.0.0.1")
-os.environ.setdefault("WEB_USERNAME", "testadmin")
-os.environ.setdefault("WEB_PASSWORD", "test-password-123")
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy.ext.asyncio import (  # noqa: E402
@@ -97,8 +95,8 @@ _APP_MAKER = "async_session"  # «EDIT» the maker's attribute name in that modu
 # «EDIT» — alembic.ini and the migration scripts, by absolute path (the suite runs from the root)
 _APP_DIR = Path(__file__).resolve().parents[1] / "app"
 
-TEST_USERNAME = os.environ["WEB_USERNAME"]
-TEST_PASSWORD = os.environ["WEB_PASSWORD"]
+TEST_USERNAME = "testadmin"
+TEST_PASSWORD = "test-password-123"
 
 
 def _build_test_schema(url: str) -> None:
@@ -251,8 +249,11 @@ def _reset_rate_limits() -> None:
 
 
 @pytest_asyncio.fixture
-async def auth_client(client: AsyncClient) -> AsyncClient:
-    """Client logged in via env-auth through the REAL login route; carries the session cookie."""
+async def auth_client(client: AsyncClient, db: AsyncSession) -> AsyncClient:
+    """Client logged in through the REAL login route as a seeded user; carries the session cookie."""
+    from app.crud.user_crud import user_crud
+
+    await user_crud.create_user(db, username=TEST_USERNAME, password=TEST_PASSWORD)
     resp = await client.post(
         "/login",
         data={"username": TEST_USERNAME, "password": TEST_PASSWORD},

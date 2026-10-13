@@ -144,11 +144,6 @@ WEB_TRUST_PROXY_HEADERS = os.getenv("WEB_TRUST_PROXY_HEADERS", "True").lower() i
     "yes",
 ]
 
-# Environment-based authentication (backward compatibility)
-# If both are set, env auth takes priority over database users
-WEB_USERNAME = os.getenv("WEB_USERNAME", "")
-WEB_PASSWORD = os.getenv("WEB_PASSWORD", "")
-
 # Login rate limiting
 WEB_LOGIN_RATE_LIMIT = int(os.getenv("WEB_LOGIN_RATE_LIMIT", "5"))
 WEB_LOGIN_RATE_WINDOW_SECONDS = int(os.getenv("WEB_LOGIN_RATE_WINDOW_SECONDS", "60"))

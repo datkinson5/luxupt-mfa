@@ -2,7 +2,6 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import config
 from app.crud.user_crud import user_crud
 from app.models.user_model import User
 
@@ -27,12 +26,13 @@ class UserCoreService:
         return await user_crud.get_by_username(self.db, username)
 
     async def create(self, username: str, password: str, is_admin: bool = True) -> User:
-        """Create a new user."""
+        """Create a user on an admin-assigned password, which they must change at first sign-in."""
         return await user_crud.create_user(
             self.db,
             username=username,
             password=password,
             is_admin=is_admin,
+            must_change_password=True,
         )
 
     async def update(
@@ -43,7 +43,11 @@ class UserCoreService:
         password: str | None = None,
         is_admin: bool | None = None,
     ) -> User | None:
-        """Update an existing user."""
+        """Update an existing user.
+
+        A password set here is an admin's reset: temporary, so the user must change it at the next
+        sign-in (FLEET-ADMIN-BOOTSTRAP-STANDARD §5). A user changes their own at /account/password.
+        """
         user = await self.get_by_id(user_id)
         if not user:
             return None
@@ -54,6 +58,7 @@ class UserCoreService:
             username=username,
             password=password,
             is_admin=is_admin,
+            must_change_password=True if password is not None else None,
         )
 
     async def delete(self, user_id: int) -> bool:
@@ -65,6 +70,18 @@ class UserCoreService:
         """Count total users."""
         return await user_crud.count(self.db)
 
+    async def retired_env_logins(self) -> list[str]:
+        """Accounts left by the retired env-credential login, which cannot sign in yet."""
+        return await user_crud.get_retired_env_logins(self.db)
+
+    async def is_last_admin(self, user_id: int) -> bool:
+        """True when this user is the only administrator: demoting or deleting them locks
+        everyone out of user management (reset-password restores a login, not the role)."""
+        user = await self.get_by_id(user_id)
+        if user is None or not user.is_admin:
+            return False
+        return await user_crud.count_admins(self.db) <= 1
+
     async def username_exists(
         self, username: str, exclude_id: int | None = None
     ) -> bool:
@@ -73,23 +90,3 @@ class UserCoreService:
         if user is None:
             return False
         return not (exclude_id is not None and user.id == exclude_id)
-
-    def has_env_auth(self) -> bool:
-        """Check if environment authentication is configured."""
-        return bool(config.WEB_PASSWORD)
-
-    async def sync_env_user(self) -> User | None:
-        """Sync environment user to database for tracking.
-
-        If WEB_PASSWORD is set, ensures a corresponding user record exists
-        in the database with auth_source='env'. Returns the user or None
-        if env auth is not configured.
-        """
-        if not self.has_env_auth():
-            return None
-
-        return await user_crud.sync_env_user(self.db, config.WEB_USERNAME)
-
-    async def get_env_user(self) -> User | None:
-        """Get the environment-managed user from database."""
-        return await user_crud.get_env_user(self.db)

@@ -235,6 +235,9 @@ configure_logging(
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Manage application lifespan."""
+    from app.cli.__main__ import (  # noqa: PLC0415
+        bootstrap_on_startup,
+    )
     from app.services.core.backup_core_service import (  # noqa: PLC0415
         BackupCoreService,
     )
@@ -254,12 +257,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Initializing database")
     await init_db()
 
-    # Sync the env-managed user ONCE at startup. It used to happen on every users-page
-    # render, which made a GET write to the database -- CSRF-reachable under SameSite=Lax
-    # (fw.state_changing_get). The env credentials only change on restart, so startup is
-    # where this belongs; the page render is now a pure read.
+    # First admin: seed INITIAL_ADMIN_* into an EMPTY users table, otherwise open /setup with a
+    # one-time token in this log (luxarch --doc FLEET-ADMIN-BOOTSTRAP-STANDARD).
+    await bootstrap_on_startup()
+    # An install upgraded from the WEB_PASSWORD login keeps that account with a placeholder hash
+    # that verifies against nothing. Say how to get back in, where the operator will look.
     async with get_db_context() as session:
-        await UserCoreService(session).sync_env_user()
+        retired = await UserCoreService(session).retired_env_logins()
+    for username in retired:
+        logger.warning(
+            "retired_env_login_cannot_sign_in",
+            extra={
+                "username": username,
+                "fix": f"docker exec <container> python -m app.cli reset-password {username}",
+            },
+        )
 
     # Load CameraManager settings from database
     async with get_db_context() as session:
@@ -449,10 +461,11 @@ def create_app() -> FastAPI:
 
     # Import and include HTMX routers (SQLite + view services architecture)
     from .routers import (  # noqa: PLC0415 (lazy router import avoids the app-factory import cycle)
+        account_router,
+        admin_bootstrap_router,
         cameras_router,
         images_router,
         pages_router,
-        setup_router,
         system_router,
         timelapse_jobs_router,
         timelapse_scheduler_router,
@@ -461,8 +474,9 @@ def create_app() -> FastAPI:
 
     # Pages router handles login, logout, dashboard
     app.include_router(pages_router, tags=["pages"])
-    # Setup router handles first-run user creation
-    app.include_router(setup_router, tags=["setup"])
+    # /setup (first admin, claimed with the token from the log) and /account/password
+    app.include_router(admin_bootstrap_router, tags=["setup"])
+    app.include_router(account_router, tags=["account"])
     # Feature routers
     app.include_router(cameras_router, prefix="/cameras", tags=["cameras"])
     app.include_router(images_router, prefix="/images", tags=["images"])
@@ -562,13 +576,8 @@ async def prometheus_metrics(request: Request) -> PlainTextResponse:
 async def start_web_server() -> None:
     """Start the web server.
 
-    The server can start in three modes:
-    1. Environment auth: WEB_PASSWORD is set, uses env-based authentication
-    2. Database auth: Users exist in database, uses database authentication
-    3. Setup mode: Neither configured, redirects to /setup for first user creation
+    Sign-in is against the users table; while it is empty, every page redirects to /setup.
     """
-    # Server will start regardless - auth is handled by middleware
-    # The setup wizard will be shown if no auth is configured
     logger.info(
         "Starting web server",
         extra={"port": config.WEB_PORT, "dev_reload": config.WEB_DEV_RELOAD},

@@ -20,6 +20,7 @@
 from typing import cast
 
 from fastapi import Request, Response
+from fastapi.responses import HTMLResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 
@@ -45,7 +46,8 @@ limiter = Limiter(key_func=client_ip)
 
 
 async def rate_limit_exceeded_handler(request: Request, exc: Exception) -> Response:
-    """Refuse an over-limit request: 429 + Retry-After, rendered as the login page."""
+    """Refuse an over-limit request: 429 + Retry-After. The login form gets its own page back;
+    any other limited form (/setup, /account/password) gets a plain message, never the login page."""
     if not isinstance(exc, RateLimitExceeded):
         raise exc
     # slowapi always attaches the Limit it refused on; the window is the honest upper bound.
@@ -54,6 +56,13 @@ async def rate_limit_exceeded_handler(request: Request, exc: Exception) -> Respo
         if exc.limit is not None
         else config.WEB_LOGIN_RATE_WINDOW_SECONDS
     )
+    if request.url.path != "/login":
+        refused: Response = HTMLResponse(
+            f"Too many attempts. Please wait {retry_after} seconds and try again.",
+            status_code=429,
+        )
+        refused.headers["Retry-After"] = str(retry_after)
+        return refused
     templates = request.app.state.templates
     response = cast(
         Response,

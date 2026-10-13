@@ -20,7 +20,7 @@ class UserRead(BaseModel):
     id: int
     username: str = Field(..., max_length=64)
     is_admin: bool
-    auth_source: str = Field(..., max_length=32)  # "database" or "env"
+    must_change_password: bool
     last_login_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

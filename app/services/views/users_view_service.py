@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from app.services.core.admin_bootstrap_core_service import MIN_PASSWORD_LENGTH
 from app.services.core.user_core_service import UserCoreService
 
 logger = logging.getLogger(__name__)
@@ -16,13 +17,7 @@ class UsersViewService:
         self.user_service = user_service
 
     async def get_users_context(self) -> dict[str, Any]:
-        """Get context for users list page.
-
-        All users (both env and database) are stored in the users table.
-        The auth_source field indicates where credentials come from.
-        """
-        # No sync here: the env user is synced ONCE at startup (web/main lifespan). Doing it
-        # on render made this GET write to the database (fw.state_changing_get).
+        """Get context for users list page."""
         users = await self.user_service.get_all()
         return {"users": users}
 
@@ -78,6 +73,8 @@ class UsersViewService:
             errors.append("Password is required")
         elif password != confirm_password:
             errors.append("Passwords do not match")
+        elif len(password) < MIN_PASSWORD_LENGTH:
+            errors.append(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
         if errors:
             logger.debug(
@@ -108,6 +105,8 @@ class UsersViewService:
         # Password validation (only if provided)
         if password and password != confirm_password:
             errors.append("Passwords do not match")
+        elif password and len(password) < MIN_PASSWORD_LENGTH:
+            errors.append(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
         return errors
 
@@ -139,6 +138,8 @@ class UsersViewService:
     ) -> tuple[bool, str]:
         """Update an existing user. Returns (success, message)."""
         username = username.strip()
+        if not is_admin and await self.user_service.is_last_admin(user_id):
+            return False, "Cannot remove the last administrator"
         try:
             user = await self.user_service.update(
                 user_id,
@@ -159,6 +160,8 @@ class UsersViewService:
         user_count = await self.user_service.count()
         if user_count <= 1:
             return False, "Cannot delete the last user"
+        if await self.user_service.is_last_admin(user_id):
+            return False, "Cannot delete the last administrator"
 
         # Get user info before deletion for message
         user = await self.user_service.get_by_id(user_id)

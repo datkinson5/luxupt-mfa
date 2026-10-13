@@ -1,14 +1,10 @@
 """
 Authentication for the web interface.
 
-Supports two authentication modes:
-1. Environment variables (WEB_USERNAME/WEB_PASSWORD) - legacy single-user mode
-2. Database users - multi-user mode with hashed passwords
-
-Authentication priority:
-1. If WEB_PASSWORD is set, use env-based auth (existing behavior)
-2. If env vars not set, check database users table
-3. If neither exists, redirect to /setup for first-run wizard
+Users sign in against the users table, the only credential store. The first admin comes from
+INITIAL_ADMIN_* or /setup, and a locked-out owner recovers with
+``python -m app.cli reset-password <username>`` (luxarch --doc FLEET-ADMIN-BOOTSTRAP-STANDARD).
+A user on a seeded, reset or admin-assigned password is sent to the change form at sign-in.
 
 Security features:
 - Auto-detects HTTPS (via X-Forwarded-Proto or request scheme) for cookie security
@@ -30,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import config
 from app.crud.user_crud import user_crud
 from app.db.database import get_db_context
+from app.models.user_model import User
+from app.services.views.admin_bootstrap_view_service import AdminBootstrapViewService
 from app.utils.password_hash import hash_password, verify_password
 from app.web.rate_limit import client_ip
 
@@ -67,29 +65,9 @@ def is_https_request(request: Request) -> bool:
     return request.url.scheme == "https"
 
 
-def uses_env_auth() -> bool:
-    """Check if environment variable authentication is configured.
-
-    Returns True if WEB_PASSWORD is set, meaning env-based auth should be used.
-    """
-    return bool(config.WEB_PASSWORD)
-
-
 async def needs_setup(db: AsyncSession) -> bool:
-    """Check if the first-run setup wizard is needed.
-
-    Setup is needed when:
-    - No WEB_PASSWORD environment variable is set, AND
-    - No users exist in the database
-
-    Returns True if the setup wizard should be shown.
-    """
-    # If env auth is configured, setup is not needed
-    if uses_env_auth():
-        return False
-
-    # Check if any database users exist
-    return not await user_crud.user_exists(db)
+    """True while there are no users: the login page and the auth redirect go to /setup."""
+    return bool(await AdminBootstrapViewService().login_page_redirect(db))
 
 
 class AuthService:
@@ -106,11 +84,6 @@ class AuthService:
         return hash_password(password)
 
     @staticmethod
-    def authenticate_user_env(username: str, password: str) -> bool:
-        """Authenticate user credentials against environment variables."""
-        return username == config.WEB_USERNAME and password == config.WEB_PASSWORD
-
-    @staticmethod
     async def authenticate_user_db(
         db: AsyncSession, username: str, password: str
     ) -> tuple[bool, int | None]:
@@ -125,24 +98,10 @@ class AuthService:
 
     @staticmethod
     async def authenticate_user(
-        db: AsyncSession | None, username: str, password: str
+        db: AsyncSession, username: str, password: str
     ) -> tuple[bool, int | None]:
-        """Authenticate user credentials.
-
-        Checks env vars first for env username, then database for all users.
-        Returns (success, user_id) tuple. user_id is None for env auth.
-        """
-        # If env auth is configured and username matches, try env auth first
-        if uses_env_auth() and username == config.WEB_USERNAME:
-            success = AuthService.authenticate_user_env(username, password)
-            if success:
-                return True, None
-
-        # Try database auth for all users (including env user if env auth failed)
-        if db is not None:
-            return await AuthService.authenticate_user_db(db, username, password)
-
-        return False, None
+        """Authenticate user credentials against the users table."""
+        return await AuthService.authenticate_user_db(db, username, password)
 
     @staticmethod
     def create_access_token(
@@ -162,6 +121,19 @@ class AuthService:
         return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
     @staticmethod
+    def decode_session(token: str) -> tuple[str, int] | None:
+        """(username, session_version) from a valid token, or None."""
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        except jwt.PyJWTError:
+            return None
+        username = payload.get("sub")
+        version = payload.get("sv")
+        if not isinstance(username, str) or not isinstance(version, int):
+            return None
+        return username, version
+
+    @staticmethod
     def verify_token(token: str) -> str | None:
         """Verify JWT token and return username."""
         try:
@@ -172,6 +144,33 @@ class AuthService:
             return username
         except jwt.PyJWTError:
             return None
+
+
+async def session_user(db: AsyncSession, token: str) -> User | None:
+    """The user a session token still belongs to, or None.
+
+    The signature alone is not enough: a token outlives a deleted or renamed user, a password
+    reset and a password change unless it is checked against the row. Each of those makes this
+    return None, so the session ends at its next request.
+    """
+    claims = AuthService.decode_session(token)
+    if claims is None:
+        return None
+    username, version = claims
+    user = await user_crud.get_by_username(db, username)
+    if user is None or user.session_version != version:
+        return None
+    return user
+
+
+def require_admin(request: Request) -> str:
+    """The signed-in username, refusing a user who is not an admin (user management)."""
+    username = get_current_user(request)
+    if not getattr(request.state, "session_is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Administrators only"
+        )
+    return username
 
 
 def get_current_user(request: Request) -> str:
@@ -198,11 +197,11 @@ def get_current_user(request: Request) -> str:
 
 async def login_form(request: Request) -> Response:
     """Display login form, or redirect to setup if no users exist."""
-    # Check if setup is needed - redirect to /setup if so
-    if not uses_env_auth():
-        async with get_db_context() as db:
-            if await needs_setup(db):
-                return RedirectResponse(url="/setup", status_code=302)
+    # While there are no users there is nobody to sign in as: the login page is /setup.
+    async with get_db_context() as db:
+        setup_path = await AdminBootstrapViewService().login_page_redirect(db)
+    if setup_path:
+        return RedirectResponse(url=setup_path, status_code=302)
 
     templates = request.app.state.templates
     # Declared, not omitted: the template reads both, so the route OWNS providing them.
@@ -213,6 +212,8 @@ async def login_form(request: Request) -> Response:
     # Show success message if redirected from setup
     if request.query_params.get("setup_complete") == "1":
         context["success"] = "Account created successfully. Please sign in."
+    elif request.query_params.get("password_changed") == "1":
+        context["success"] = "Password changed. Please sign in with the new one."
 
     return cast(
         Response, templates.TemplateResponse(request, "pages/login.html", context)
@@ -234,10 +235,9 @@ async def login(
     # (app/web/rate_limit.py), which refuses with a 429. This only logs the address.
     address = client_ip(request)
 
-    # Authenticate (supports both env and database auth)
     success, user_id = await AuthService.authenticate_user(db, username, password)
 
-    if not success:
+    if not success or user_id is None:
         logger.warning(
             "Failed login attempt", extra={"username": username, "client_ip": address}
         )
@@ -252,26 +252,26 @@ async def login(
             ),
         )
 
-    # Update last login time
-    if user_id is not None:
-        # Database user - update last login
-        await user_crud.update_last_login(db, user_id)
-    else:
-        # Env user - sync to database and update last login
-        env_user = await user_crud.sync_env_user(db, username)
-        await user_crud.update_last_login(db, env_user.id)
+    signed_in = await user_crud.update_last_login(db, user_id)
+    if signed_in is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     logger.info("Successful login", extra={"username": username, "client_ip": address})
 
     # Create access token
     access_token_expires = timedelta(minutes=config.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = AuthService.create_access_token(
-        data={"sub": username}, expires_delta=access_token_expires
+        data={"sub": signed_in.username, "sv": signed_in.session_version},
+        expires_delta=access_token_expires,
     )
 
     # Redirect to cameras with the session cookie. Cookie flags are hard literals
     # (fw.secure_cookies): the app is always served over HTTPS behind nginx.
-    response = RedirectResponse(url="/cameras", status_code=302)
+    # A seeded, reset or admin-assigned password goes to the change form before any other page.
+    destination = await AdminBootstrapViewService().login_destination(
+        db, username, "/cameras"
+    )
+    response = RedirectResponse(url=destination, status_code=302)
     response.set_cookie(
         key=COOKIE_NAME,
         value=access_token,

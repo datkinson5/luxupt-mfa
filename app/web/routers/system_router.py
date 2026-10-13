@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Res
 from fastapi.responses import HTMLResponse
 
 from app.core import config
-from app.web.auth import get_current_user
+from app.web.auth import get_current_user, require_admin
 from app.web.deps import SystemViewDep, TemplatesDep, UsersViewDep
 from app.web.main import get_start_time
 from app.web.query_params import IntFilter
@@ -161,7 +161,7 @@ async def users_page(
     request: Request,
     templates: TemplatesDep,
     view_service: UsersViewDep,
-    user: str = Depends(get_current_user),
+    user: str = Depends(require_admin),
 ) -> Response:
     """Render the user management page."""
     context = await view_service.get_users_context()
@@ -178,7 +178,7 @@ async def users_list_partial(
     request: Request,
     templates: TemplatesDep,
     view_service: UsersViewDep,
-    user: str = Depends(get_current_user),
+    user: str = Depends(require_admin),
 ) -> Response:
     """Render the users list partial for HTMX updates."""
     context = await view_service.get_users_context()
@@ -196,7 +196,7 @@ async def user_form_panel(
     templates: TemplatesDep,
     view_service: UsersViewDep,
     user_id: IntFilter = None,
-    user: str = Depends(get_current_user),
+    user: str = Depends(require_admin),
 ) -> Response:
     """Render the user create/edit form panel."""
     context = await view_service.get_user_form_context(user_id)
@@ -216,8 +216,8 @@ async def create_user(
     username: Annotated[str, Form()],
     password: Annotated[str, Form()],
     confirm_password: Annotated[str, Form()],
-    is_admin: Annotated[bool, Form()] = True,
-    user: str = Depends(get_current_user),
+    is_admin: Annotated[bool, Form()] = False,  # an unticked box is omitted
+    user: str = Depends(require_admin),
 ) -> Response:
     """Create a new user."""
     logger.debug(
@@ -272,8 +272,8 @@ async def update_user(
     username: Annotated[str, Form()],
     password: Annotated[str, Form()] = "",
     confirm_password: Annotated[str, Form()] = "",
-    is_admin: Annotated[bool, Form()] = True,
-    user: str = Depends(get_current_user),
+    is_admin: Annotated[bool, Form()] = False,  # an unticked box is omitted
+    user: str = Depends(require_admin),
 ) -> Response:
     """Update an existing user."""
     # Validate via view service
@@ -318,7 +318,7 @@ async def user_delete_confirm_panel(
     request: Request,
     templates: TemplatesDep,
     view_service: UsersViewDep,
-    user: str = Depends(get_current_user),
+    user: str = Depends(require_admin),
 ) -> Response:
     """Render the delete confirmation panel."""
     context = await view_service.get_delete_confirm_context(user_id)
@@ -336,7 +336,7 @@ async def delete_user(
     request: Request,
     templates: TemplatesDep,
     view_service: UsersViewDep,
-    user: str = Depends(get_current_user),
+    user: str = Depends(require_admin),
 ) -> Response:
     """Delete a user."""
     # Delete via view service (handles last-user check)

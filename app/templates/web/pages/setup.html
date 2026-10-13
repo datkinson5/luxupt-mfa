@@ -17,7 +17,7 @@
     {% from "macros/icons.html" import icon %}
 
     <div class="flex min-h-full flex-col justify-center px-6 py-12 lg:px-8">
-        <!-- Setup Card -->
+        <!-- Login Card -->
         <div class="sm:mx-auto sm:w-full sm:max-w-md">
             <div class="group rounded-2xl border border-surface-400/30 bg-surface-500/50 px-8 py-10 shadow-xl transition-all duration-300 hover:border-primary-500/50 hover:shadow-glow">
                 <!-- Header -->
@@ -28,28 +28,27 @@
                     <h2 class="text-2xl font-bold tracking-tight text-white">
                         Welcome to LuxUPT
                     </h2>
-                    <p class="mt-2 text-sm text-surface-200">
-                        Create your admin account to get started
-                    </p>
                 </div>
 
-                {% if errors %}
-                <div class="mb-6 rounded-lg border border-danger-500/30 bg-danger-500/10 px-4 py-3 text-sm text-danger-400">
-                    <ul class="list-disc list-inside space-y-1">
-                        {% for error in errors %}
-                        <li>{{ error }}</li>
-                        {% endfor %}
-                    </ul>
+                <p class="mb-6 text-center text-sm text-surface-200">
+                    There are no users yet. The server printed a one-time setup token in its log when
+                    it started; paste it below. Only someone who can read the server log can create
+                    this account.
+                </p>
+
+                {% if error %}
+                <div role="alert" class="mb-6 rounded-lg border border-danger-500/30 bg-danger-500/10 px-4 py-3 text-sm text-danger-400">
+                    {{ error }}
                 </div>
                 {% endif %}
 
+                {# Context from AdminBootstrapViewService: login, login_kind, error. #}
                 <form class="space-y-5" action="/setup" method="POST">
-                    {# undefined-guards: GET /setup renders with no context; only the POST error
-                       paths re-render with a username to preserve. Optional by design. #}
-                    {{ text_input("username", label="Username", type="text", value=username | default('', true), placeholder="Choose a username", required=true, autocomplete="username") }}
-                    {{ text_input("password", label="Password", type="password", placeholder="Choose a password", required=true, autocomplete="new-password") }}
-                    {{ text_input("confirm_password", label="Confirm Password", type="password", placeholder="Confirm your password", required=true, autocomplete="new-password") }}
-                    {{ primary("Create Account", type="submit", full_width=true) }}
+                    {{ text_input("token", label="Setup token", type="text", required=true, autocomplete="off") }}
+                    {{ text_input("login", label="Email" if login_kind == "email" else "Username", type="email" if login_kind == "email" else "text", value=login, required=true, autocomplete="username") }}
+                    {{ text_input("password", label="Password", type="password", required=true, autocomplete="new-password") }}
+                    {{ text_input("password_confirm", label="Confirm password", type="password", required=true, autocomplete="new-password") }}
+                    {{ primary("Create admin", type="submit", full_width=true) }}
                 </form>
 
                 <p class="mt-8 text-center text-xs text-surface-200">

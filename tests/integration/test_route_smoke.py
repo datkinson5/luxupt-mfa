@@ -28,7 +28,6 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import config
 from app.models.camera_model import Camera
 from app.models.capture_model import Capture
 from app.models.enum_model import CaptureMethod, CaptureStatus, JobStatus
@@ -121,6 +120,7 @@ def _ran(resp: Any, what: str) -> None:
 # ── GET: no path parameters ────────────────────────────────────────────────────────────
 
 STATIC_GETS = [
+    "/account/password",
     "/dashboard",
     "/openapi.json",
     "/cameras/capture-stats",
@@ -161,14 +161,9 @@ class TestAuthenticatedGets:
 class TestPublicGets:
     """GETs reachable without a session."""
 
-    async def test_setup_page(
-        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The first-run form renders only when setup is genuinely needed: no env auth and no
-        # DB users. The suite logs in with env auth, under which /setup correctly bounces to
-        # /login -- the handler's redirect branch, not the form. Switch env auth off for this
-        # request (the test's database has no users) so the TEMPLATE renders.
-        monkeypatch.setattr(config, "WEB_PASSWORD", "")
+    async def test_setup_page(self, client: AsyncClient) -> None:
+        # The first-run form renders only while there are no users, which is this test's
+        # database: the TEMPLATE renders, not the 404 it becomes once anyone exists.
         resp = await client.get("/setup")
         _ran(resp, "GET /setup")
         assert resp.status_code == 200, f"GET /setup did not render: {resp.status_code}"
@@ -402,12 +397,24 @@ class TestUserPosts:
         resp = await client.post(
             "/setup",
             data={
-                "username": "setup-smoke-user",
+                "token": "not-the-token",
+                "login": "setup-smoke-user",
                 "password": "setup-password-123",
-                "confirm_password": "setup-password-123",
+                "password_confirm": "setup-password-123",
             },
         )
         _ran(resp, "POST /setup")
+
+    async def test_change_password_post(self, auth_client: AsyncClient) -> None:
+        resp = await auth_client.post(
+            "/account/password",
+            data={
+                "current_password": "wrong-current-password",
+                "new_password": "a-new-password-123",
+                "confirm_password": "a-new-password-123",
+            },
+        )
+        _ran(resp, "POST /account/password")
 
 
 class TestDeletes:

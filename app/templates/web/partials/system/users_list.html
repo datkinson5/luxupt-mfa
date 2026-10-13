@@ -7,31 +7,21 @@
 
 {% if users %}
     {% call data_table([
-        {"label": "Username"}, {"label": "Source"}, {"label": "Role"},
+        {"label": "Username"}, {"label": "Role"},
         {"label": "Last Login"}, {"label": "Created"}, {"label": "Actions", "align": "right"}
     ]) %}
             {% for u in users %}
-            <tr class="hover:bg-surface-700/30 transition-colors {% if u.auth_source == 'env' %}bg-surface-700/10{% endif %}">
+            <tr class="hover:bg-surface-700/30 transition-colors">
                 <td class="px-4 py-3 whitespace-nowrap">
                     <div class="flex items-center gap-3">
-                        {% if u.auth_source == 'env' %}
-                        <div class="flex-shrink-0 h-8 w-8 rounded-full bg-warning-500/20 flex items-center justify-center">
-                            {{ icon('key', 'w-4 h-4 text-warning-400') }}
-                        </div>
-                        {% else %}
                         <div class="flex-shrink-0 h-8 w-8 rounded-full bg-primary-500/20 flex items-center justify-center">
                             {{ icon('user', 'w-4 h-4 text-primary-400') }}
                         </div>
-                        {% endif %}
                         <span class="text-sm font-medium text-white">{{ u.username }}</span>
+                        {% if u.must_change_password %}
+                        {{ chip('Must change password', 'warning', size='sm') }}
+                        {% endif %}
                     </div>
-                </td>
-                <td class="px-4 py-3 whitespace-nowrap">
-                    {% if u.auth_source == 'env' %}
-                    {{ chip('Environment', 'warning', size='sm') }}
-                    {% else %}
-                    {{ chip('Database', 'info', size='sm') }}
-                    {% endif %}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap">
                     {% if u.is_admin %}
@@ -51,9 +41,6 @@
                     {{ u.created_at|timeago }}
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap text-right">
-                    {% if u.auth_source == 'env' %}
-                    <span class="text-xs text-surface-400 italic">Managed via compose</span>
-                    {% else %}
                     <div class="flex items-center justify-end gap-2">
                         {{ icon_button("pencil", "Edit", size="sm", variant="primary",
                                         hx_attrs={"hx-get": "/system/partials/user-form?user_id={{ u.id }}",
@@ -64,7 +51,6 @@
                                                   "hx-target": "#panel-container",
                                                   "hx-swap": "innerHTML"}) }}
                     </div>
-                    {% endif %}
                 </td>
             </tr>
             {% endfor %}
