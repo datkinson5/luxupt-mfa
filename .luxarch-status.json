@@ -1,6 +1,6 @@
 {
   "guard": "luxarch",
-  "guard_version": "0.277.0",
+  "guard_version": "0.289.3",
   "repo": "/repo",
   "targets": [
     {
@@ -1614,6 +1614,28 @@
           "example": ""
         },
         {
+          "rule": "fw.rate_limit_key_unspoofable",
+          "status": "PASS",
+          "since": "0.278.0",
+          "violations": 0,
+          "deferred": false,
+          "inert": false,
+          "inert_reason": "",
+          "fix": "",
+          "example": ""
+        },
+        {
+          "rule": "fw.trusted_host_enforced",
+          "status": "FAIL",
+          "since": "0.280.0",
+          "violations": 1,
+          "deferred": false,
+          "inert": false,
+          "inert_reason": "",
+          "fix": "Install the emitted middleware on the app the entry point serves, over a REQUIRED setting: `luxarch --emit trusted-host > app/core/trusted_host.py`, declare `ALLOWED_HOSTS: AllowedHosts` (no default) on the settings class, and `app.add_middleware(AllowedHostsMiddleware, allowed_hosts=settings.ALLOWED_HOSTS, health_paths=(...))` unconditionally. The hostnames go in each `.env.<env>` (`ALLOWED_HOSTS=dev.example.com` in `.env.dev`), with the key documented in `.env.example`: never hardcode them in code, and never ask for them. An nginx `default_server` returning 444 is recommended defence in depth, not a substitute. See `luxarch --doc FLEET-BUILD-DEPLOY-STANDARD` \"Trusted hosts\".",
+          "example": ""
+        },
+        {
           "rule": "fw.module_homes",
           "status": "PASS",
           "since": "0.233.0",
@@ -1700,14 +1722,80 @@
           "inert_reason": "",
           "fix": "",
           "example": ""
+        },
+        {
+          "rule": "fw.admin_bootstrap_safe",
+          "status": "FAIL",
+          "since": "0.280.0",
+          "violations": 2,
+          "deferred": false,
+          "inert": false,
+          "inert_reason": "",
+          "fix": "luxarch --doc FLEET-ADMIN-BOOTSTRAP-STANDARD is the standard; `luxarch --emit admin-bootstrap` (+ `-crud`, `-view`, `-router`, `-cli`, `-form`) is the implementation: no default password anywhere (the env-example key present but EMPTY), INITIAL_ADMIN_EMAIL (or _USERNAME) / INITIAL_ADMIN_PASSWORD(_FILE) applied only while the users table is empty and with must_change_password set, otherwise /setup gated by a one-time token from the log, recovery via `python -m app.cli reset-password <user>`, and login sends a must_change_password user to the change form. A red here is aligned, not waived.",
+          "example": ""
+        },
+        {
+          "rule": "fw.redirect_target_safe",
+          "status": "PASS",
+          "since": "0.285.0",
+          "violations": 0,
+          "deferred": false,
+          "inert": false,
+          "inert_reason": "",
+          "fix": "",
+          "example": ""
+        },
+        {
+          "rule": "fw.sign_in_not_on_get",
+          "status": "INERT",
+          "since": "0.286.0",
+          "violations": 0,
+          "deferred": false,
+          "inert": true,
+          "inert_reason": "declare the cookie(s) this app authenticates by in [csrf].session_cookies (a session middleware's cookie counts) so a GET that writes them can be found",
+          "fix": "",
+          "example": ""
+        },
+        {
+          "rule": "fw.single_use_claim_atomic",
+          "status": "FAIL",
+          "since": "0.287.0",
+          "violations": 1,
+          "deferred": false,
+          "inert": false,
+          "inert_reason": "",
+          "fix": "Claim it in one statement that only matches an available row: `update(Model).where(Model.token_hash == h, Model.used_at.is_(None), Model.expires_at > now).values(used_at=now).returning(Model)`, and refuse when it returns no row. Or load the row with `.with_for_update()` before checking and writing it. See --doc FLEET-AUTH-SESSION-STANDARD \u00a71.2.",
+          "example": ""
+        },
+        {
+          "rule": "fw.logout_revokes_server_side",
+          "status": "INERT",
+          "since": "0.288.0",
+          "violations": 0,
+          "deferred": false,
+          "inert": true,
+          "inert_reason": "declare the cookie(s) this app authenticates by in [csrf].session_cookies so its logout can be judged against the code that reads them",
+          "fix": "",
+          "example": ""
+        },
+        {
+          "rule": "fw.auth_posts_refuse_cross_site",
+          "status": "INERT",
+          "since": "0.289.0",
+          "violations": 0,
+          "deferred": false,
+          "inert": true,
+          "inert_reason": "declare the cookie(s) this app authenticates by in [csrf].session_cookies so its authentication POSTs can be found",
+          "fix": "",
+          "example": ""
         }
       ],
       "summary": {
-        "PASS": 131,
-        "FAIL": 0,
+        "PASS": 133,
+        "FAIL": 3,
         "XFAIL": 0,
         "XPASS": 0,
-        "INERT": 23
+        "INERT": 26
       }
     }
   ],
@@ -1913,24 +2001,24 @@
       },
       {
         "rule": "repo.deploy_tag_is_immutable",
-        "status": "PASS",
+        "status": "FAIL",
         "since": "0.197.0",
-        "violations": 0,
+        "violations": 3,
         "deferred": false,
         "inert": false,
         "inert_reason": "",
-        "fix": "",
+        "fix": "pin an immutable identifier in `.env.<env>` (compose) or the overlay's `images: newTag:` (kustomize): `sha-<commit>` (every build, no ceremony \u2014 the sha is already computed for BUILD_COMMIT) or `TAG=<version>` for a cut release. A moving tag cannot be a deployment record: you cannot say which bits are running and you cannot roll back to them. `luxarch --emit image-block` prints the canonical scheme, where `:dev` survives only as a human-readable alias nothing pins. See --doc FLEET-BUILD-DEPLOY-STANDARD.",
         "example": ""
       },
       {
         "rule": "repo.release_scans_candidate",
-        "status": "PASS",
+        "status": "FAIL",
         "since": "0.250.0",
-        "violations": 0,
+        "violations": 3,
         "deferred": false,
         "inert": false,
         "inert_reason": "",
-        "fix": "",
+        "fix": "Re-emit `luxarch --emit image-block` (v14): its `release` builds, `docker save`s the tag it is about to push, runs `luxaudit --image-archive` (luxaudit >= 0.13.0) on THAT archive with THIS repo as `/repo` (`-v \"$(CURDIR)\":/repo`; `$(PWD)` is the caller's directory) and only then pushes. Multi-arch (`PLATFORMS`): push a `candidate-<commit>` tag nothing pins, pin its digest, pull + save + scan each platform by that digest, then `docker buildx imagetools create` the release tag from it. See --doc FLEET-BUILD-DEPLOY-STANDARD, Architectures.",
         "example": ""
       },
       {
@@ -2003,6 +2091,17 @@
         "rule": "repo.claude_pointer_present",
         "status": "PASS",
         "since": "0.213.0",
+        "violations": 0,
+        "deferred": false,
+        "inert": false,
+        "inert_reason": "",
+        "fix": "",
+        "example": ""
+      },
+      {
+        "rule": "repo.agent_instructions_resolve",
+        "status": "PASS",
+        "since": "0.280.0",
         "violations": 0,
         "deferred": false,
         "inert": false,
@@ -2140,6 +2239,17 @@
         "inert": false,
         "inert_reason": "",
         "fix": "",
+        "example": ""
+      },
+      {
+        "rule": "repo.images_on_fleet_line",
+        "status": "FAIL",
+        "since": "0.282.0",
+        "violations": 1,
+        "deferred": false,
+        "inert": false,
+        "inert_reason": "",
+        "fix": "bound every image to a version line: `nginx:1.31-alpine`, not `nginx:alpine` or `:latest`. Where the fleet keeps a line (`luxarch --fleet-versions`), use that line; patches float under it, which is the point, and a move to the next line is a deliberate fleet bump the owner makes in ONE home. No digests, no exact freezes. A data-bearing image (postgres and its extension images) is judged only for being unbounded: its major is a dump-and-restore. See --doc FLEET-BUILD-DEPLOY-STANDARD, 'Image lines'.",
         "example": ""
       },
       {
@@ -2286,6 +2396,17 @@
         "example": ""
       },
       {
+        "rule": "repo.image_block_wired",
+        "status": "FAIL",
+        "since": "0.280.0",
+        "violations": 6,
+        "deferred": false,
+        "inert": false,
+        "inert_reason": "",
+        "fix": "Paste `luxarch --emit image-block` into the Makefile and delete the hand-written publish and deploy targets; set its settings ABOVE it (REGISTRY, and as needed RELEASE_REGISTRY, PLATFORMS for a multi-arch image, PUBLIC_REGISTRY for a public copy, IMAGE_NAME, BUILD_CONTEXT, IMAGES for more than one image). Where the block cannot serve this repo, escalate to the luxarch maintainer and leave this red lit: a hand-written copy is the drift the block exists to end. See --doc FLEET-BUILD-DEPLOY-STANDARD.",
+        "example": ""
+      },
+      {
         "rule": "repo.poetry_version_consistent",
         "status": "PASS",
         "since": "0.268.0",
@@ -2419,20 +2540,20 @@
       }
     ],
     "summary": {
-      "PASS": 61,
-      "FAIL": 1,
+      "PASS": 60,
+      "FAIL": 5,
       "XFAIL": 0,
       "XPASS": 0,
       "INERT": 2
     }
   },
   "summary": {
-    "PASS": 192,
-    "FAIL": 1,
+    "PASS": 193,
+    "FAIL": 8,
     "XFAIL": 0,
     "XPASS": 0,
-    "INERT": 25
+    "INERT": 28
   },
-  "commit": "d28dcb2d359b9af25eb16d89ba181f9cabfe0938",
-  "generated_at": "2026-10-10T21:15:10Z"
+  "commit": "32f1012354451641c13390fb3130cd3d5be76836",
+  "generated_at": "2026-10-13T02:32:30Z"
 }

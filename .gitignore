@@ -83,3 +83,6 @@ Makefile.local
 
 # Generated stylesheet: the image builds its own (Dockerfile css stage); make css-watch for local dev.
 app/static/css/app.css
+
+# Claude Code hook session state (luxarch --emit hooks)
+.claude/.session-commits.json
