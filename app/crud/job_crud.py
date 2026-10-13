@@ -231,20 +231,27 @@ class CRUDJob(CRUDBase[Job, JobCreate, JobUpdate]):
         return job
 
     async def cancel_job(self, db: AsyncSession, job_id: str) -> Job | None:
-        """Cancel a pending job."""
-        job = await self.get_by_job_id(db, job_id)
-        if not job or job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
-            return None
+        """Cancel a pending or running job.
 
-        job.status = JobStatus.CANCELLED
-        job.completed_at = datetime.now(UTC)
-        job.message = "Cancelled"
-        job.pid = None  # Clear PID on cancel
-
-        db.add(job)
-        await db.flush()
-        await db.refresh(job)
-        return job
+        The status check and the write are one statement, so a cancel racing the
+        worker's completion (or a second cancel) cannot both win: the loser
+        matches no row and gets None.
+        """
+        result = await db.execute(
+            update(Job)
+            .where(
+                Job.job_id == job_id,
+                Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+            )
+            .values(
+                status=JobStatus.CANCELLED,
+                completed_at=datetime.now(UTC),
+                message="Cancelled",
+                pid=None,  # Clear PID on cancel
+            )
+            .returning(Job)
+        )
+        return result.scalar_one_or_none()
 
     async def update_pid(self, db: AsyncSession, job_id: str, pid: int) -> Job | None:
         """Store the FFmpeg process ID for a running job."""
