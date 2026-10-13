@@ -17,7 +17,6 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import (
     PlainTextResponse,
     Response,
@@ -29,6 +28,7 @@ from slowapi.errors import RateLimitExceeded
 from app.clients.camera_manager import CameraManager, CameraManagerSettings
 from app.core import config
 from app.core.logging_config import configure_logging
+from app.core.trusted_host import AllowedHostsMiddleware
 from app.crud import activity_crud, camera_crud
 from app.crud.fetch_settings_crud import fetch_settings_crud
 from app.db.database import close_db, get_db, get_db_context, init_db
@@ -250,14 +250,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # Startup
     logger.info("Starting web interface")
-    if not config.ALLOWED_HOSTS_NAMED:
-        # Fail-closed is silent from outside: the container health check (localhost) stays green
-        # while every request through nginx gets a 400. Say so where an operator will look.
-        logger.warning(
-            "ALLOWED_HOSTS is not set: only localhost is answered, every other Host gets 400",
-            extra={"allowed_hosts": config.ALLOWED_HOSTS},
-        )
-
     # Initialize database
     logger.info("Initializing database")
     await init_db()
@@ -437,8 +429,13 @@ def create_app() -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(AuthRedirectMiddleware)
     # Refuse a forged Host before any app middleware or route sees the request (make smoke probes
-    # it). Request logging wraps it, so a refusal is logged like every other 4xx.
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.ALLOWED_HOSTS)
+    # it). Request logging wraps it, so a refusal is logged like every other 4xx. The container's own
+    # HEALTHCHECK (loopback peer, Host localhost) is let through on its path only.
+    app.add_middleware(
+        AllowedHostsMiddleware,
+        allowed_hosts=config.host_settings.ALLOWED_HOSTS,
+        health_paths=("/health/live",),
+    )
     app.add_middleware(RequestLoggingMiddleware)
 
     # Static files

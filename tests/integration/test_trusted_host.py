@@ -8,9 +8,17 @@ attacker chose. `make smoke` probes the same thing on the deployed stack.
 import logging
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
+from starlette.responses import PlainTextResponse
+from starlette.types import Receive, Scope, Send
 
-from app.core.config import parse_allowed_hosts
+from app.core.config import HostSettings
+from app.core.trusted_host import (
+    AllowedHostsError,
+    AllowedHostsMiddleware,
+    parse_allowed_hosts,
+)
 
 
 async def test_forged_host_is_refused(client: AsyncClient) -> None:
@@ -34,11 +42,65 @@ async def test_forged_host_refusal_is_logged(
     )
 
 
-def test_naming_a_host_keeps_localhost_for_the_healthcheck() -> None:
-    # The container healthcheck hits localhost:${WEB_PORT}; naming the public host must not drop it.
-    hosts = parse_allowed_hosts("ll01.example.com")
-    assert {"ll01.example.com", "localhost", "127.0.0.1"} <= set(hosts)
+@pytest.mark.parametrize(
+    "raw", [None, "", " , ", "*", "app.example.com,*", "app.example.com:11001"]
+)
+def test_unusable_allowed_hosts_refuses_to_start(raw: str | None) -> None:
+    # No default to fall back on: an environment nobody configured fails at its first deploy.
+    with pytest.raises(AllowedHostsError):
+        parse_allowed_hosts(raw)
 
 
-def test_unset_falls_back_closed_to_localhost() -> None:
-    assert set(parse_allowed_hosts("")) == {"localhost", "127.0.0.1"}
+def test_allowed_hosts_are_lowercased_and_trimmed() -> None:
+    assert parse_allowed_hosts(" App.Example.com ,b.example.com") == [
+        "app.example.com",
+        "b.example.com",
+    ]
+
+
+def _probe_app() -> AllowedHostsMiddleware:
+    async def ok(scope: Scope, receive: Receive, send: Send) -> None:
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    return AllowedHostsMiddleware(
+        ok, allowed_hosts=["app.example.com"], health_paths=("/health/live",)
+    )
+
+
+async def _get(path: str, headers: dict[str, str], peer: str = "127.0.0.1") -> int:
+    transport = ASGITransport(app=_probe_app(), client=(peer, 5000))
+    async with AsyncClient(transport=transport, base_url="http://x") as c:
+        return (await c.get(path, headers=headers)).status_code
+
+
+async def test_container_healthcheck_passes_without_localhost_listed() -> None:
+    assert await _get("/health/live", {"Host": "localhost:8080"}) == 200
+
+
+@pytest.mark.parametrize(
+    ("path", "headers", "peer"),
+    [
+        # localhost on any other route is a forged Host like any other
+        ("/", {"Host": "localhost"}, "127.0.0.1"),
+        # a request a proxy relayed never gets the probe exemption
+        (
+            "/health/live",
+            {"Host": "localhost", "X-Forwarded-For": "127.0.0.1"},
+            "127.0.0.1",
+        ),
+        # nor does one from off the box
+        ("/health/live", {"Host": "localhost"}, "10.0.0.5"),
+    ],
+)
+async def test_localhost_is_refused_outside_the_probe(
+    path: str, headers: dict[str, str], peer: str
+) -> None:
+    assert await _get(path, headers, peer) == 400
+
+
+def test_settings_refuse_to_load_without_allowed_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ALLOWED_HOSTS", raising=False)
+    with pytest.raises(ValidationError, match="ALLOWED_HOSTS"):
+        HostSettings()

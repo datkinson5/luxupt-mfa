@@ -10,6 +10,10 @@ is available, or settings that cannot change at runtime (like file paths).
 import os
 from pathlib import Path
 
+from pydantic_settings import BaseSettings
+
+from app.core.trusted_host import AllowedHosts
+
 # =============================================================================
 # UNIFI PROTECT API (env var fallback when not set in database)
 # =============================================================================
@@ -110,22 +114,22 @@ LOG_LEVELS: dict[str, str] = {
 
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 
-# Host headers the app answers (comma list), enforced by TrustedHostMiddleware. nginx forwards the
-# client's Host unchanged, so without this the app answers any name pointed at it. Unset, it fails
-# CLOSED to localhost only (and startup logs a warning): a real deployment must name itself.
-# localhost is ALWAYS allowed, because the container health check calls localhost:${WEB_PORT}.
-# IPv6-literal hosts are not supported (Starlette matches on the text before the first ':').
-_ALWAYS_ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
+# Host headers the app answers (comma list in .env.<env>): REQUIRED, no default. nginx forwards the
+# client's Host unchanged, so without this the app answers any name pointed at it. Unset, empty, `*`
+# or a host with a port refuses to start (app/core/trusted_host.py). localhost is NOT listed: the
+# container health check passes through AllowedHostsMiddleware's loopback-probe exemption instead.
 
 
-def parse_allowed_hosts(raw: str) -> list[str]:
-    """ALLOWED_HOSTS as a list, plus the hosts the health check needs."""
-    named = [h.strip() for h in raw.split(",") if h.strip()]
-    return named + [h for h in _ALWAYS_ALLOWED_HOSTS if h not in named]
+class HostSettings(BaseSettings):
+    """The settings read through pydantic: a required, validated value with no default."""
+
+    ALLOWED_HOSTS: AllowedHosts
 
 
-ALLOWED_HOSTS: list[str] = parse_allowed_hosts(os.getenv("ALLOWED_HOSTS", ""))
-ALLOWED_HOSTS_NAMED = bool(os.getenv("ALLOWED_HOSTS", "").strip())
+host_settings = (
+    HostSettings()
+)  # reads the environment; refuses an unusable ALLOWED_HOSTS
+
 WEB_DEV_RELOAD = os.getenv("WEB_DEV_RELOAD", "False").lower() in ["true", "1", "yes"]
 WEB_SESSION_SECRET = os.getenv("WEB_SESSION_SECRET", "")  # Auto-generated if empty
 WEB_CORS_ORIGINS = (
