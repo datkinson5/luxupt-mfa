@@ -147,7 +147,7 @@ lock: poetry-lock  ## Regenerate poetry.lock (alias for poetry-lock — runs IN 
 # --- Poetry in Docker (no local poetry needed; matches the Dockerfile's version) ---
 POETRY_IN_DOCKER_VERSION := 2.4.1
 define poetry_docker
-	docker run --rm -v $(PWD):/app -w /app python:3.14-slim \
+	docker run --rm -v "$(CURDIR)":/app -w /app python:3.14-slim \
 	  sh -c "pip install -q poetry==$(POETRY_IN_DOCKER_VERSION) && poetry $(1)"
 endef
 
@@ -379,17 +379,17 @@ format: ## Apply every canonical formatter in place -- Python (ruff) AND markdow
 	@# make), and a bare `ruff format` would use ruff's DEFAULT line-length since the repo carries
 	@# no ruff config. Never a bare mdformat either -- without mdformat-gfm it COLLAPSES GFM
 	@# tables. Un-autofixable reds that remain are the burn-down, not a format failure.
-	docker run --rm -v $(PWD):/repo $(LUXLINT_IMAGE) --format
+	docker run --rm -v "$(CURDIR)":/repo $(LUXLINT_IMAGE) --format
 
 .PHONY: lint
 lint: ## luxlint ruff + eslint — MOUNT-ONLY (FLEET-MAKEFILE-STANDARD: lint and mypy are separate gate steps)
-	@docker run --rm -v $(PWD):/repo $(LUXLINT_IMAGE)
+	@docker run --rm -v "$(CURDIR)":/repo $(LUXLINT_IMAGE)
 
 .PHONY: mypy
 mypy: ## mypy — MOUNT-ONLY (fleet typed deps baked); applies the [mypy].baseline ratchet itself
 	@# No dev image / --emit-config / pip install: luxlint --mypy reads [source].paths and
 	@# auto-injects the pydantic plugin.
-	@docker run --rm -v $(PWD):/repo $(LUXLINT_IMAGE) --mypy
+	@docker run --rm -v "$(CURDIR)":/repo $(LUXLINT_IMAGE) --mypy
 
 # JS linting is the luxlint image's job now (lint.eslint, canonical config). To auto-fix locally:
 #   luxlint --emit-config eslint > .luxlint.eslint.config.mjs   # gitignored
@@ -403,7 +403,7 @@ LUXARCH_IMAGE    ?= $(LUXARCH_REGISTRY)/luxardolabs/luxarch:$(LUXARCH_VERSION)
 
 .PHONY: arch
 arch: ## Architecture conformance via luxarch (pinned; reads .luxarch.toml)
-	docker run --rm -v $(PWD):/repo $(LUXARCH_IMAGE)
+	docker run --rm -v "$(CURDIR)":/repo $(LUXARCH_IMAGE)
 
 # Dependency-vulnerability / SCA guard (luxaudit) — pinned; host from Makefile.local.
 # Mount-only, no tail, no deps: reads poetry.lock and checks every pinned dep against the
@@ -413,7 +413,7 @@ LUXAUDIT_IMAGE   ?= $(LUXARCH_REGISTRY)/luxardolabs/luxaudit:$(LUXAUDIT_VERSION)
 
 .PHONY: audit
 audit: ## Scan pinned deps against the live vulnerability feed (luxaudit)
-	docker run --rm -v $(PWD):/repo $(LUXAUDIT_IMAGE)
+	docker run --rm -v "$(CURDIR)":/repo $(LUXAUDIT_IMAGE)
 
 .PHONY: guard-version-check
 guard-version-check: ## FATAL: fail the gate if any guard pin is behind the published latest
@@ -454,11 +454,11 @@ guard-upgrade:  ## Bump every guard pin to the published latest (prints what new
 .PHONY: onboard-check
 onboard-check: ## Prove the repo is onboarded: all three guards ON + HONEST, NOT green (FLEET-ONBOARDING-STANDARD §5)
 	@set +e; fail=0; \
-	docker run --rm -v $(PWD):/repo $(LUXARCH_IMAGE)  --version  >/dev/null || { echo "luxarch not wired";  fail=1; }; \
-	docker run --rm -v $(PWD):/repo $(LUXLINT_IMAGE)  --preflight            || { echo "mypy tail NOT honest (luxlint --preflight)"; fail=1; }; \
-	docker run --rm -v $(PWD):/repo $(LUXAUDIT_IMAGE) 2>&1 | grep -q "scan could not run" && { echo "luxaudit can't scan — supply-chain blind"; fail=1; }; \
-	docker run --rm -v $(PWD):/repo $(LUXLINT_IMAGE)  --version  >/dev/null || { echo "luxlint not wired";  fail=1; }; \
-	docker run --rm -v $(PWD):/repo $(LUXAUDIT_IMAGE) --version  >/dev/null || { echo "luxaudit not wired"; fail=1; }; \
+	docker run --rm -v "$(CURDIR)":/repo $(LUXARCH_IMAGE)  --version  >/dev/null || { echo "luxarch not wired";  fail=1; }; \
+	docker run --rm -v "$(CURDIR)":/repo $(LUXLINT_IMAGE)  --preflight            || { echo "mypy tail NOT honest (luxlint --preflight)"; fail=1; }; \
+	docker run --rm -v "$(CURDIR)":/repo $(LUXAUDIT_IMAGE) 2>&1 | grep -q "scan could not run" && { echo "luxaudit can't scan — supply-chain blind"; fail=1; }; \
+	docker run --rm -v "$(CURDIR)":/repo $(LUXLINT_IMAGE)  --version  >/dev/null || { echo "luxlint not wired";  fail=1; }; \
+	docker run --rm -v "$(CURDIR)":/repo $(LUXAUDIT_IMAGE) --version  >/dev/null || { echo "luxaudit not wired"; fail=1; }; \
 	[ $$fail -eq 0 ] && echo "onboard-check: all three guards on + honest ✓" || { echo "onboard-check FAILED"; exit 1; }
 
 # The migration chain must BUILD the schema. `make test` builds its schema from create_all, so it
@@ -475,7 +475,7 @@ db-verify: ## FRESH EMPTY DB -> alembic upgrade head -> diff vs models (fails on
 	@rm -rf $(VERIFY_DB_DIR); mkdir -p $(VERIFY_DB_DIR)
 	@set -e; \
 	docker build -q -f Dockerfile.test -t $(TEST_DEPS_IMAGE) . >/dev/null; \
-	docker run --rm -v $(PWD):/w -w /w -v $(VERIFY_DB_DIR):$(VERIFY_DB_DIR) \
+	docker run --rm -v "$(CURDIR)":/w -w /w -v $(VERIFY_DB_DIR):$(VERIFY_DB_DIR) \
 	  --env DATABASE_DIR=$(VERIFY_DB_DIR) --env VERIFY_DATABASE_URL=$(VERIFY_DATABASE_URL) \
 	  $(TEST_DEPS_IMAGE) sh -c 'cd /w/app && PYTHONPATH=/w alembic upgrade head && cd /w && PYTHONPATH=/w python scripts/verify_migration_chain.py'; \
 	status=$$?; rm -rf $(VERIFY_DB_DIR); exit $$status
@@ -487,8 +487,8 @@ honest: ## A green check must MEAN nothing was silently unchecked (luxarch 0.114
 	@# so `check` could go green while a guard family was blind. Placed early in `check` so a later
 	@# red step can never skip it. A no-op target named `honest` is itself flagged -- the recipe
 	@# must really invoke --assert-scans.
-	@docker run --rm -v $(PWD):/repo $(LUXARCH_IMAGE) --assert-scans
-	@docker run --rm -v $(PWD):/repo $(LUXLINT_IMAGE) --preflight
+	@docker run --rm -v "$(CURDIR)":/repo $(LUXARCH_IMAGE) --assert-scans
+	@docker run --rm -v "$(CURDIR)":/repo $(LUXLINT_IMAGE) --preflight
 
 # Regenerate the committed guard-status files. The fleet READS these instead of re-running every
 # guard on every repo; freshness is verified against HEAD on read, so a stale file is detected, not
@@ -503,9 +503,9 @@ status: ## Regenerate committed guard-status files (.lux*-status.json) — commi
 	@# committable status. The verdict lives IN the json.
 	@set -e; export SHA=$$(git rev-parse HEAD) TS=$$(date -u +%FT%TZ); \
 	J=$$(mktemp); trap 'rm -f "$$J"' EXIT INT TERM; \
-	docker run --rm -v $(PWD):/repo $(LUXLINT_IMAGE)  --json > "$$J" || true; $(STAMP) "$$J" .luxlint-status.json; \
-	docker run --rm -e LUXARCH_STATUS_WRITE=1 -v $(PWD):/repo $(LUXARCH_IMAGE)  --json > "$$J" || true; $(STAMP) "$$J" .luxarch-status.json; \
-	docker run --rm -v $(PWD):/repo $(LUXAUDIT_IMAGE) --json > "$$J" || true; $(STAMP) "$$J" .luxaudit-status.json; \
+	docker run --rm -v "$(CURDIR)":/repo $(LUXLINT_IMAGE)  --json > "$$J" || true; $(STAMP) "$$J" .luxlint-status.json; \
+	docker run --rm -e LUXARCH_STATUS_WRITE=1 -v "$(CURDIR)":/repo $(LUXARCH_IMAGE)  --json > "$$J" || true; $(STAMP) "$$J" .luxarch-status.json; \
+	docker run --rm -v "$(CURDIR)":/repo $(LUXAUDIT_IMAGE) --json > "$$J" || true; $(STAMP) "$$J" .luxaudit-status.json; \
 	echo "wrote .lux*-status.json at $$SHA — commit them"
 
 .PHONY: check
@@ -519,7 +519,7 @@ check: guard-version-check honest lint mypy test db-verify arch audit gitleaks #
 
 .PHONY: plan
 plan: ## The full architecture red board at once (phase-ordered) — the burn-down view, not the gate
-	@docker run --rm -v $(PWD):/repo $(LUXARCH_IMAGE) --plan
+	@docker run --rm -v "$(CURDIR)":/repo $(LUXARCH_IMAGE) --plan
 
 # ── Test image (the image block's verification half; this repo keeps its own site-aware deploy) ──
 # LOCAL verification image — BARE on purpose: it cannot be pushed by accident and cannot be mistaken
@@ -693,7 +693,8 @@ docker-login-ghcr: ## Login to GitHub Container Registry
 # the artifact that was released — and it needs no registry login of its own.
 .PHONY: release-public
 release-public: ## [PUBLIC REPO] Scan + promote :$(VERSION) + :latest to GHCR, then publish the GitHub Release
-	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
+	@s=$$(git status --porcelain) || { echo "REFUSING: git status failed, so the tree cannot be shown clean"; exit 1; }; \
+	if [ -n "$$s" ]; then \
 	  echo "REFUSING: the working tree is dirty, so v$(VERSION) would not describe these bits:"; \
 	  git status --short | sed 's/^/    /'; exit 1; \
 	fi
@@ -710,7 +711,7 @@ release-public: ## [PUBLIC REPO] Scan + promote :$(VERSION) + :latest to GHCR, t
 	for plat in $(subst $(comma), ,$(PLATFORM)); do \
 	  docker pull -q --platform $$plat $(VERSION_IMAGE) >/dev/null; \
 	  docker save $(VERSION_IMAGE) -o "$$T"; chmod 644 "$$T"; \
-	  docker run --rm -v $(PWD):/repo -v luxaudit-cache:/root/.cache/trivy -v "$$T":/candidate.tar:ro \
+	  docker run --rm -v "$(CURDIR)":/repo -v luxaudit-cache:/root/.cache/trivy -v "$$T":/candidate.tar:ro \
 	    "$$ref" --image-archive /candidate.tar --image-label "$(VERSION_IMAGE) ($$plat)"; \
 	done; \
 	docker pull -q $(VERSION_IMAGE) >/dev/null
@@ -794,7 +795,8 @@ endef
 
 .PHONY: publish-sha
 publish-sha: validate-version validate-structure buildx-setup docker-pull-cache ## Build, SCAN, then push :sha-<commit> (multi-arch) — the dev-deploy artifact
-	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
+	@s=$$(git status --porcelain) || { echo "REFUSING: git status failed, so the tree cannot be shown clean"; exit 1; }; \
+	if [ -n "$$s" ]; then \
 	  echo "REFUSING: the working tree is dirty, so sha-$(COMMIT) would not describe these bits:"; \
 	  git status --short | sed 's/^/    /'; \
 	  echo "Commit first, then publish. make test runs uncommitted code; the stack runs what was pushed."; \
@@ -823,7 +825,7 @@ publish-sha: validate-version validate-structure buildx-setup docker-pull-cache 
 	for plat in $(subst $(comma), ,$(PLATFORM)); do \
 	  docker pull -q --platform $$plat $(CANDIDATE_IMAGE) >/dev/null; \
 	  docker save $(CANDIDATE_IMAGE) -o "$$T"; chmod 644 "$$T"; \
-	  docker run --rm -v $(PWD):/repo -v luxaudit-cache:/root/.cache/trivy -v "$$T":/candidate.tar:ro \
+	  docker run --rm -v "$(CURDIR)":/repo -v luxaudit-cache:/root/.cache/trivy -v "$$T":/candidate.tar:ro \
 	    "$$ref" --image-archive /candidate.tar --image-label "$(CANDIDATE_IMAGE) ($$plat)"; \
 	done
 	docker buildx imagetools create -t $(SHA_IMAGE) $(CANDIDATE_IMAGE)
@@ -1082,14 +1084,14 @@ run-docker: ## Run the application in Docker
 	docker run --rm -it \
 		-e UNIFI_PROTECT_API_KEY="your_key_here" \
 		-e UNIFI_PROTECT_BASE_URL="https://your-protect/proxy/protect/integration/v1" \
-		-v $(PWD)/output:/app/luxupt/output \
+		-v "$(CURDIR)/output":/app/luxupt/output \
 		$(LOCAL_BUILD_IMAGE)
 
 .PHONY: shell
 shell: ## Open a shell in the Docker container
 	@echo '$(BLUE)Opening shell in container...$(NC)'
 	docker run --rm -it \
-		-v $(PWD)/output:/app/luxupt/output \
+		-v "$(CURDIR)/output":/app/luxupt/output \
 		--entrypoint /bin/sh \
 		$(LOCAL_BUILD_IMAGE)
 
