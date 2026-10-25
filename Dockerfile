@@ -49,8 +49,11 @@ RUN poetry install --with dev --no-root --no-directory
 FROM node:24-slim AS css
 ARG APP_DIR
 WORKDIR /build
-COPY ${APP_DIR:-.}/package.json ${APP_DIR:-.}/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# package-lock.json is gitignored upstream, so a build from a clean clone has none: use it when
+# present (reproducible `npm ci`), otherwise resolve from package.json with `npm install`.
+COPY ${APP_DIR:-.}/package*.json ./
+RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; \
+    else npm install --no-audit --no-fund; fi
 COPY ${APP_DIR:-.}/ .
 RUN npm run build:css
 # ---- end css stage ----
