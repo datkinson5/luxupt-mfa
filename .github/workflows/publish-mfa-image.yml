@@ -1,0 +1,67 @@
+# Fork-only: publish this fork's image (TOTP/MFA sign-in) to GitHub Container Registry so a NAS
+# or any Docker host can pull it instead of building. Upstream ships its own image through
+# `make release`; this workflow exists only in datkinson5/luxupt-mfa.
+#
+#   ghcr.io/datkinson5/luxupt-mfa:latest        newest build of main
+#   ghcr.io/datkinson5/luxupt-mfa:sha-<commit>  that exact commit, for pinning or rolling back
+#
+# amd64 covers Intel/AMD QNAPs and Docker Desktop; arm64 covers ARM QNAPs.
+
+name: Publish MFA image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-mfa-image
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name and build metadata
+        id: meta
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "version=$(tr -d '[:space:]' < VERSION)-mfa" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: production
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.short_sha }}
+          build-args: |
+            BUILD_VERSION=${{ steps.meta.outputs.version }}
+            BUILD_COMMIT=${{ steps.meta.outputs.short_sha }}
+            BUILD_TIMESTAMP=${{ steps.meta.outputs.timestamp }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=LuxUPT with TOTP/MFA sign-in for UniFi Fabrics consoles
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
