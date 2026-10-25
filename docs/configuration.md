@@ -74,10 +74,24 @@ ______________________________________________________________________
 | `UNIFI_PROTECT_VERIFY_SSL` | Verify SSL certificates (`true` or `false`)                             | `false` |
 | `UNIFI_PROTECT_USERNAME`   | Local Protect user — **only** needed for historical timelapses          | —       |
 | `UNIFI_PROTECT_PASSWORD`   | That user's password                                                    | —       |
+| `UNIFI_PROTECT_TOTP_SECRET` | Authenticator secret, when that user is a Ubiquiti account with MFA     | —       |
 
 The API key covers live capture. **Historical timelapses** — building a timelapse from the recordings already on your NVR — read Protect's recording stream, which the integration API key cannot reach, so they additionally need `UNIFI_PROTECT_USERNAME` / `UNIFI_PROTECT_PASSWORD`.
 
-That must be a **local Protect user**, not a Ubiquiti SSO account. Create one in the Protect UI with view access to the cameras you want; SSO credentials will not authenticate here.
+Use a **local Protect user** where you can: create one in the Protect UI with view access to the cameras you want.
+
+#### Ubiquiti (SSO) accounts with MFA
+
+A console in a **UniFi Fabric** cannot have local users, so there the account has to be a Ubiquiti account, and those always have MFA. LuxUPT can sign in as one if its MFA method is an **authenticator app**:
+
+1. Create a dedicated Ubiquiti account for LuxUPT (don't reuse a person's account) and give it view access to the cameras in Protect.
+2. Set up MFA on it with an authenticator app. When the setup screen shows the QR code, also copy the **secret key** (or the `otpauth://` link) before scanning it.
+3. Make the authenticator app the account's only MFA method, so the console never falls back to email or push prompts.
+4. Set `UNIFI_PROTECT_USERNAME` to the account's email, `UNIFI_PROTECT_PASSWORD` to its password, and `UNIFI_PROTECT_TOTP_SECRET` to the secret key. Spaces and lower case in the key are fine.
+
+LuxUPT then sends the current six-digit code with every sign-in. The secret is read from the environment only — it is never stored in LuxUPT's database or shown in the web UI. Treat it like the password: anyone holding both can sign in as that account.
+
+TOTP codes depend on the clock, so the host running LuxUPT needs accurate time (NTP).
 
 Leave them unset if you only use live capture — the Scheduler will simply show the recordings-based source as unavailable, and tell you which setting is missing.
 

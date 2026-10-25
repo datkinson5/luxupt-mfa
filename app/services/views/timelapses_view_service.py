@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.protect_client import ProtectClient
+from app.core import config
 from app.db.post_commit import after_commit
 from app.models.enum_model import ScheduleSource
 from app.schemas.pagination_schema import build_pagination
@@ -467,6 +468,7 @@ class TimelapsesViewService:
                         base_url=base_url,
                         username=username,
                         password=password,
+                        totp_secret=config.UNIFI_PROTECT_TOTP_SECRET,
                         verify_ssl=verify_ssl,
                     ) as pc:
                         raw_ranges = await pc.get_all_camera_recording_ranges()

@@ -344,7 +344,7 @@ Access via **Historical** on the Timelapses page. Builds a timelapse for days yo
 
 This is the panel to use when you want footage of something that already happened. Normal timelapse creation can only use images LuxUPT captured at the time; this one reads Protect's own recording stream, so the only limit is how far back your NVR still holds recordings.
 
-**Requires a local Protect user.** Set `UNIFI_PROTECT_USERNAME` and `UNIFI_PROTECT_PASSWORD` — the API key alone cannot read recordings. See [Configuration](configuration.md). Without them this panel tells you what is missing rather than failing when you submit.
+**Requires a Protect sign-in.** Set `UNIFI_PROTECT_USERNAME` and `UNIFI_PROTECT_PASSWORD` for a local Protect user, plus `UNIFI_PROTECT_TOTP_SECRET` if it is a Ubiquiti account with MFA — the API key alone cannot read recordings. See [Configuration](configuration.md). Without them this panel tells you what is missing rather than failing when you submit.
 
 | Setting          | Description                                                                                      |
 | ---------------- | ------------------------------------------------------------------------------------------------ |

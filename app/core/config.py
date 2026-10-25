@@ -22,6 +22,10 @@ UNIFI_PROTECT_BASE_URL = os.getenv("UNIFI_PROTECT_BASE_URL", "")
 UNIFI_PROTECT_API_KEY = os.getenv("UNIFI_PROTECT_API_KEY", "")
 UNIFI_PROTECT_USERNAME = os.getenv("UNIFI_PROTECT_USERNAME", "")
 UNIFI_PROTECT_PASSWORD = os.getenv("UNIFI_PROTECT_PASSWORD", "")
+# Authenticator (TOTP) secret for a Ubiquiti account with MFA, used in place of a
+# local user — consoles in a UniFi Fabric cannot have local users. Env-only: it is
+# a second credential and stays out of the database and the web UI.
+UNIFI_PROTECT_TOTP_SECRET = os.getenv("UNIFI_PROTECT_TOTP_SECRET", "")
 UNIFI_PROTECT_VERIFY_SSL = os.getenv("UNIFI_PROTECT_VERIFY_SSL", "false").lower() in [
     "true",
     "1",

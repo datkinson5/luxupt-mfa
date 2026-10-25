@@ -199,6 +199,7 @@ class HistoricalFetchCoreService:
             base_url=base_url,
             username=username,
             password=password,
+            totp_secret=config.UNIFI_PROTECT_TOTP_SECRET,
             verify_ssl=verify_ssl,
         ) as pc:
 

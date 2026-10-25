@@ -327,7 +327,11 @@ ______________________________________________________________________
 
 Historical timelapses read Protect's recording stream, which the integration API key cannot reach. They need `UNIFI_PROTECT_USERNAME` and `UNIFI_PROTECT_PASSWORD` as well.
 
-It must be a **local Protect user**, not a Ubiquiti SSO account — SSO credentials will not authenticate against the recording API. Create a local user in the Protect UI with view access to the cameras you want.
+Use a **local Protect user**, or — on a console in a UniFi Fabric, which cannot have local users — a Ubiquiti account with an authenticator app and `UNIFI_PROTECT_TOTP_SECRET` set. See [Configuration](configuration.md#ubiquiti-sso-accounts-with-mfa).
+
+**"login needs MFA".** The account is a Ubiquiti account with MFA, and `UNIFI_PROTECT_TOTP_SECRET` is not set.
+
+**"login rejected the TOTP code".** The secret is not this account's authenticator key, the authenticator app is not its MFA method (email or push only), or the host clock is off. LuxUPT already retries once with the next code, so a single expired code does not cause this.
 
 **The job runs but returns no frames for some days.** Your NVR only holds recordings for as long as its retention allows. The panel shows the available range for the camera you picked; anything outside it has been overwritten. A camera added recently has a shorter range than the others.
 

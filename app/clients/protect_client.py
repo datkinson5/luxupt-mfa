@@ -12,7 +12,12 @@ LuxUPT's RTSP+ffmpeg path was built to deliver because Ubiquiti's public API is
 resolution-capped on most camera models.
 
 The client maintains a single httpx.AsyncClient with a cookie jar; on 401 it
-re-logs in once and retries. It is intended to be long-lived (one instance per
+re-logs in once and retries.
+
+Sign-in works with a local Protect user, or with a Ubiquiti (SSO) account that
+has an authenticator app as its MFA method: give `totp_secret` and each login
+sends the current code in the `token` field UniFi OS reads for MFA. Consoles in
+a UniFi Fabric cannot have local users, so this is their only way in. It is intended to be long-lived (one instance per
 app, injected via deps), not constructed per-request.
 """
 
@@ -30,6 +35,7 @@ import httpx
 import urllib3
 
 from app.utils.async_fs import path_mkdir
+from app.utils.totp import parse_secret, seconds_until_next_step, totp
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +52,16 @@ class ProtectRequestError(RuntimeError):
     pass
 
 
+class ProtectMfaRequiredError(ProtectAuthError):
+    """The account needs a second factor that LuxUPT could not satisfy."""
+
+
+# UniFi OS answers a login that still needs a second factor with HTTP 499, and
+# names MFA in the body; some versions use 401/403 instead, so the body decides.
+_MFA_STATUS_CODES = frozenset({400, 401, 403, 499})
+_MFA_MARKERS = ("MFA", "2FA", "TWO_FACTOR", "AUTHENTICATOR")
+
+
 class ProtectClient:
     def __init__(
         self,
@@ -53,6 +69,7 @@ class ProtectClient:
         username: str,
         password: str,
         *,
+        totp_secret: str = "",
         verify_ssl: bool = False,
         timeout: float = 30.0,
     ) -> None:
@@ -72,6 +89,8 @@ class ProtectClient:
 
         self.username = username
         self.password = password
+        # Decoded once so a bad secret fails at construction, not mid-job.
+        self._totp_key = parse_secret(totp_secret) if totp_secret else None
         self.verify_ssl = bool(verify_ssl)
         self.timeout = timeout
 
@@ -110,21 +129,42 @@ class ProtectClient:
 
         Holds an asyncio.Lock so a burst of concurrent fetches doesn't hammer
         Protect with N parallel logins (which Protect rate-limits with HTTP 429).
+
+        With a TOTP secret the code goes in the first request, so the console
+        never sends the account an email or push prompt. If the console still
+        answers with an MFA challenge — the code expired in flight, or this
+        console only takes a code after challenging — one retry follows with
+        the next code.
         """
         async with self._login_lock:
             if self._logged_in:
                 # Another task already logged in while we were waiting
                 return
             assert self._client is not None
-            url = f"{self.host}/api/auth/login"
-            resp = await self._client.post(
-                url,
-                json={"username": self.username, "password": self.password},
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-            )
+
+            resp = await self._post_login(self._login_payload())
+            if self._is_mfa_challenge(resp) and self._totp_key is not None:
+                wait = seconds_until_next_step()
+                logger.info(
+                    "Protect asked for MFA; retrying with the next TOTP code",
+                    extra={"host": self.host, "wait_seconds": round(wait, 1)},
+                )
+                await asyncio.sleep(wait + 1)
+                resp = await self._post_login(self._login_payload())
+
+            if self._is_mfa_challenge(resp):
+                if self._totp_key is None:
+                    raise ProtectMfaRequiredError(
+                        "login needs MFA: this is a Ubiquiti account with MFA "
+                        "enabled. Set UNIFI_PROTECT_TOTP_SECRET to its "
+                        "authenticator secret, or use a local Protect user."
+                    )
+                raise ProtectMfaRequiredError(
+                    "login rejected the TOTP code: check UNIFI_PROTECT_TOTP_SECRET "
+                    "is this account's authenticator secret, that the authenticator "
+                    "app is its MFA method, and that the host clock is correct. "
+                    f"HTTP {resp.status_code} - {resp.text[:200]}"
+                )
             if resp.status_code >= 400:
                 raise ProtectAuthError(
                     f"login failed: HTTP {resp.status_code} - {resp.text[:200]}"
@@ -132,8 +172,43 @@ class ProtectClient:
             self._logged_in = True
             logger.info(
                 "Protect login successful",
-                extra={"host": self.host, "user": self.username},
+                extra={
+                    "host": self.host,
+                    "user": self.username,
+                    "mfa": self._totp_key is not None,
+                },
             )
+
+    def _login_payload(self) -> dict[str, Any]:
+        """The login body; a fresh TOTP code is computed on every call."""
+        payload: dict[str, Any] = {
+            "username": self.username,
+            "password": self.password,
+            "rememberMe": True,
+        }
+        if self._totp_key is not None:
+            payload["token"] = totp(self._totp_key)
+        return payload
+
+    async def _post_login(self, payload: dict[str, Any]) -> httpx.Response:
+        assert self._client is not None
+        return await self._client.post(
+            f"{self.host}/api/auth/login",
+            json=payload,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+
+    @staticmethod
+    def _is_mfa_challenge(resp: httpx.Response) -> bool:
+        if resp.status_code not in _MFA_STATUS_CODES:
+            return False
+        if resp.status_code == 499:
+            return True
+        body = resp.text.upper()
+        return any(marker in body for marker in _MFA_MARKERS)
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         """Issue a request, logging in on first call and once on 401."""

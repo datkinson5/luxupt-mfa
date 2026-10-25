@@ -15,6 +15,7 @@ from app.clients.protect_client import (
     ProtectClient,
     ProtectRequestError,
 )
+from app.core import config
 from app.services.core.camera_core_service import CameraCoreService
 from app.services.core.capture_core_service import CaptureCoreService
 from app.services.core.capture_stats_core_service import CaptureStatsCoreService
@@ -532,6 +533,7 @@ class CamerasViewService:
                 base_url=base_url,
                 username=username,
                 password=password,
+                totp_secret=config.UNIFI_PROTECT_TOTP_SECRET,
                 verify_ssl=verify_ssl,
             ) as pc:
                 jpg = await pc.historical_snapshot(test_camera.camera_id, ts)
