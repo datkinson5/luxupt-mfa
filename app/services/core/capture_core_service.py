@@ -145,6 +145,10 @@ class CaptureCoreService:
         """Get recent failed captures."""
         return await capture_crud.get_recent_failures(self.db, limit=limit)
 
+    async def clear_failures(self) -> int:
+        """Delete all failed capture records (the Recent Failures list and Failed count)."""
+        return await capture_crud.delete_failed(self.db)
+
     async def get_adjacent_image(
         self,
         *,

@@ -206,6 +206,15 @@ class CRUDCapture(CRUDBase[Capture, CaptureCreate, CaptureUpdate]):
         )
         return list(result.scalars().all())
 
+    async def delete_failed(self, db: AsyncSession) -> int:
+        """Delete every failed capture row; returns how many. Failed rows have no image
+        file, so nothing on disk is touched."""
+        count = await execute_rowcount(
+            db, delete(Capture).where(Capture.status == "failed")
+        )
+        await db.flush()
+        return count
+
     async def get_by_camera_and_timestamp(
         self,
         db: AsyncSession,

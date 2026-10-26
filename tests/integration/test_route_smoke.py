@@ -444,6 +444,12 @@ class TestDeletes:
             "DELETE /cameras/{camera_id}",
         )
 
+    async def test_clear_failures(self, auth_client: AsyncClient) -> None:
+        _ran(
+            await auth_client.post("/cameras/failures/clear"),
+            "POST /cameras/failures/clear",
+        )
+
     async def test_delete_images(
         self, auth_client: AsyncClient, seeded: dict[str, Any]
     ) -> None:

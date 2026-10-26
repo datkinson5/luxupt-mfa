@@ -1,7 +1,7 @@
 {% extends "layouts/base.html" %}
 {% from "macros/cards.html" import stat_card, camera_card, empty_state %}
 {% from "macros/icons.html" import icon %}
-{% from "macros/buttons.html" import secondary %}
+{% from "macros/buttons.html" import secondary, danger_confirm %}
 {% from "macros/navigation.html" import page_header, section, collapsible_section %}
 {% from "macros/tables.html" import data_table %}
 
@@ -28,6 +28,9 @@
 {# Recent Failures — collapsible (defaults open; remembers the user's toggle) #}
 {% if recent_failures %}
 {% call collapsible_section("Recent Failures (" ~ recent_failures|length ~ ")", "cameras_failures", icon_name="exclamation-triangle") %}
+<div class="flex justify-end mb-3">
+    {{ danger_confirm("Clear failures", confirm_text="Click to clear all failures", loading_text="Clearing...", size="sm", icon_name="trash", hx_post="/cameras/failures/clear", hx_target="body", hx_swap="none") }}
+</div>
 <div class="rounded-xl border border-danger-500/30 bg-danger-500/5 overflow-hidden">
     {% call data_table([
         {"label": "Time"}, {"label": "Camera"}, {"label": "Int", "align": "right"}, {"label": "Error"}

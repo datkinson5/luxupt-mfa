@@ -697,6 +697,12 @@ class CamerasViewService:
             )
             return False, str(e)
 
+    async def clear_failures(self) -> int:
+        """Clear the Recent Failures list: deletes every failed capture record."""
+        count = await self.capture_service.clear_failures()
+        logger.info("Cleared failed captures", extra={"count": count})
+        return count
+
     async def get_camera_cards_context(self) -> dict[str, Any]:
         """Get data for the cameras page's card grid.
 

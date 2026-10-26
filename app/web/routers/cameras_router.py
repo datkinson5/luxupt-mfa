@@ -242,6 +242,17 @@ async def capture_stats_charts(
     )
 
 
+@router.post("/failures/clear", response_class=HTMLResponse)
+async def clear_failures(
+    view_service: CamerasViewDep,
+    user: str = Depends(get_current_user),
+) -> Response:
+    """Delete every failed capture record, then reload the page so the Recent Failures
+    panel and the Failed count reflect it. Successful captures and images are untouched."""
+    await view_service.clear_failures()
+    return Response(status_code=200, headers={"HX-Refresh": "true"})
+
+
 @router.get("/{camera_id}/settings", response_class=HTMLResponse)
 async def camera_settings_panel(
     camera_id: str,
