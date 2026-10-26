@@ -464,6 +464,7 @@ def create_app() -> FastAPI:
         account_router,
         admin_bootstrap_router,
         cameras_router,
+        entra_router,
         images_router,
         pages_router,
         system_router,
@@ -477,6 +478,8 @@ def create_app() -> FastAPI:
     # /setup (first admin, claimed with the token from the log) and /account/password
     app.include_router(admin_bootstrap_router, tags=["setup"])
     app.include_router(account_router, tags=["account"])
+    # Sign in with Microsoft Entra ID (fork); 404s unless ENTRA_* is configured.
+    app.include_router(entra_router, tags=["entra"])
     # Feature routers
     app.include_router(cameras_router, prefix="/cameras", tags=["cameras"])
     app.include_router(images_router, prefix="/images", tags=["images"])

@@ -15,7 +15,9 @@
                 {{ nav_link("/images", "Images", request.url.path.startswith('/images'), 'photo') }}
                 {{ nav_link("/timelapses", "Timelapses", request.url.path.startswith('/timelapses'), 'film') }}
                 {{ nav_link("/system/activity", "Activity", request.url.path.startswith('/system/activity'), 'clipboard-document-list') }}
+                {% if can_manage(request) %}
                 {{ nav_link("/system", "System", request.url.path.startswith('/system') and not request.url.path.startswith('/system/activity'), 'cog-6-tooth') }}
+                {% endif %}
             </div>
 
             <!-- Right side -->
@@ -61,11 +63,13 @@
                 {{ icon('clipboard-document-list', 'w-5 h-5') }}
                 Activity
             </a>
+            {% if can_manage(request) %}
             <a href="/system"
                class="flex items-center gap-3 px-3 py-2 rounded-lg text-base font-medium transition-colors {% if request.url.path.startswith('/system') and not request.url.path.startswith('/system/activity') %}text-primary-400 bg-primary-500/10{% else %}text-surface-200 hover:text-white hover:bg-surface-700{% endif %}">
                 {{ icon('cog-6-tooth', 'w-5 h-5') }}
                 System
             </a>
+            {% endif %}
             <div class="border-t border-surface-400/30 mt-2 pt-2">
                 {% if user %}
                 <div class="flex items-center gap-3 px-3 py-2 text-sm text-surface-200">

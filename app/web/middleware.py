@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
+from .access import reader_forbidden
 from .auth import (
     COOKIE_NAME,
     is_https_request,
@@ -132,7 +133,7 @@ class AuthRedirectMiddleware(BaseHTTPMiddleware):
     """
 
     # Paths that don't require authentication
-    PUBLIC_PATHS = {"/login", "/setup", "/health", "/metrics", "/static"}
+    PUBLIC_PATHS = {"/login", "/setup", "/health", "/metrics", "/static", "/auth/entra/"}
     # The only pages a user who must change their password can reach.
     CHANGE_PASSWORD_PATH = "/account/password"
     FORCED_CHANGE_PATHS = (CHANGE_PASSWORD_PATH, "/logout", "/static")
@@ -166,6 +167,8 @@ class AuthRedirectMiddleware(BaseHTTPMiddleware):
             response.delete_cookie(COOKIE_NAME)
             return response
         request.state.session_is_admin = is_admin
+        if not is_admin and reader_forbidden(request.method, request.url.path):
+            return self._read_only(request)
 
         # A seeded, reset or admin-assigned password is changed before ANY other page, not just
         # at sign-in: the same cookie must not reach the rest of the app on a temporary password.
@@ -173,6 +176,22 @@ class AuthRedirectMiddleware(BaseHTTPMiddleware):
             return self._redirect(request, self.CHANGE_PASSWORD_PATH)
 
         return await call_next(request)
+
+    def _read_only(self, request: Request) -> Response:
+        """A read-only user tried to change something or open an admin page."""
+        logger.info(
+            "read_only_refused",
+            extra={"method": request.method, "path": request.url.path},
+        )
+        message = "You have read-only access. Ask a Timelapse administrator to make this change."
+        if self._is_htmx_request(request) or request.method not in ("GET", "HEAD"):
+            return Response(message, status_code=403, media_type="text/plain")
+        return Response(
+            f"<!doctype html><title>Read-only access</title><p>{message}</p>"
+            '<p><a href="/cameras">Back to cameras</a></p>',
+            status_code=403,
+            media_type="text/html",
+        )
 
     def _is_htmx_request(self, request: Request) -> bool:
         """Check if this is an HTMX request."""

@@ -12,7 +12,8 @@ name: Publish MFA image
 
 on:
   push:
-    branches: [main]
+    # feat/** branches run the test suite only; main also publishes the image.
+    branches: [main, "feat/**"]
   workflow_dispatch:
 
 permissions:
@@ -20,7 +21,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: publish-mfa-image
+  group: publish-mfa-image-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -71,14 +72,17 @@ jobs:
           exit $rc
 
       - uses: docker/setup-qemu-action@v3
+        if: github.ref == 'refs/heads/main'
 
       - uses: docker/login-action@v3
+        if: github.ref == 'refs/heads/main'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/build-push-action@v6
+        if: github.ref == 'refs/heads/main'
         with:
           context: .
           target: production

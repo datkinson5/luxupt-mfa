@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import StrictUndefined
 
 from app.core import config
+from app.web.access import can_manage
 from app.web.template_filters import register_filters
 from app.web.template_helpers import paginated_url
 
@@ -50,5 +51,8 @@ templates.env.globals.update(
         "str": str,
         "float": float,
         "dev_mode": config.LOG_LEVEL == "DEBUG",
+        # Fork: Entra sign-in button, and hiding change controls from read-only users.
+        "entra_enabled": config.ENTRA_ENABLED,
+        "can_manage": can_manage,
     }
 )

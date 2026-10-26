@@ -33,6 +33,9 @@ class User(Base, TimestampMixin):
         Integer, default=0, server_default="0", nullable=False
     )
     last_login_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    # Microsoft Entra object ID for a user who signs in with Microsoft (fork feature). It, not the
+    # username, identifies them: a UPN can change, the object ID cannot.
+    entra_oid: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
 
     def __repr__(self) -> str:
         return f"<User(id={self.id}, username={self.username})>"

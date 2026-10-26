@@ -51,6 +51,17 @@
                     {{ primary("Sign in", type="submit", full_width=true) }}
                 </form>
 
+                {% if entra_enabled %}
+                <div class="my-6 flex items-center gap-3 text-xs uppercase tracking-wide text-surface-300">
+                    <span class="h-px flex-1 bg-surface-400/30"></span>or<span class="h-px flex-1 bg-surface-400/30"></span>
+                </div>
+                <a href="/auth/entra/login"
+                   class="flex w-full items-center justify-center gap-3 rounded-lg border border-surface-400/40 bg-surface-700/60 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:border-primary-500/60 hover:bg-surface-600/60">
+                    <svg class="h-5 w-5" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
+                    Sign in with Microsoft
+                </a>
+                {% endif %}
+
                 <p class="mt-8 text-center text-xs text-surface-200">
                     Powered by
                     <a href="https://www.luxardolabs.com/"

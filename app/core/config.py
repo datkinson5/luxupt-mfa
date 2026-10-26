@@ -158,6 +158,31 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(
 )  # 7 days
 
 # =============================================================================
+# MICROSOFT ENTRA ID SIGN-IN (optional; fork feature)
+# =============================================================================
+# "Sign in with Microsoft" appears on the login page when the tenant, client, secret and
+# redirect URI are set and at least one of the two groups is. Membership of a group IS the
+# grant: the LuxUPT user is created at first sign-in and its role set at every sign-in.
+# Each group value is matched against the ID token's `groups` claim (group object IDs) and its
+# `roles` claim (app role values), so either Entra setup works.
+ENTRA_TENANT_ID = os.getenv("ENTRA_TENANT_ID", "").strip()
+ENTRA_CLIENT_ID = os.getenv("ENTRA_CLIENT_ID", "").strip()
+ENTRA_CLIENT_SECRET = os.getenv("ENTRA_CLIENT_SECRET", "").strip()
+# The exact URI registered on the app, e.g. https://nas.example.lan:8443/auth/entra/callback.
+ENTRA_REDIRECT_URI = os.getenv("ENTRA_REDIRECT_URI", "").strip()
+ENTRA_ADMIN_GROUP = os.getenv("ENTRA_ADMIN_GROUP", "").strip()
+ENTRA_READ_GROUP = os.getenv("ENTRA_READ_GROUP", "").strip()
+# A Microsoft sign-in session lasts this long, so a group change applies within it.
+ENTRA_SESSION_HOURS = int(os.getenv("ENTRA_SESSION_HOURS", "12"))
+ENTRA_ENABLED = bool(
+    ENTRA_TENANT_ID
+    and ENTRA_CLIENT_ID
+    and ENTRA_CLIENT_SECRET
+    and ENTRA_REDIRECT_URI
+    and (ENTRA_ADMIN_GROUP or ENTRA_READ_GROUP)
+)
+
+# =============================================================================
 # PAGINATION DEFAULTS
 # =============================================================================
 

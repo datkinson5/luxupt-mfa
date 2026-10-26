@@ -8,12 +8,14 @@
 {% block title %}Cameras - LuxUPT{% endblock %}
 
 {% block content %}
-{% if needs_api_setup %}
+{% if needs_api_setup and can_manage(request) %}
 {# Auto-load settings panel when API is not configured #}
 <div hx-get="/cameras/fetch-settings" hx-target="#panel-container" hx-swap="innerHTML" hx-trigger="load"></div>
 {% endif %}
 {% call page_header("Cameras", "Click on a camera to view details") %}
+    {% if can_manage(request) %}
     {{ secondary("Capture Settings", icon_name="cog-6-tooth", hx_attrs={"hx-get": "/cameras/fetch-settings", "hx-target": "#panel-container", "hx-swap": "innerHTML"}) }}
+    {% endif %}
 {% endcall %}
 
 {# Statistics Section #}
@@ -28,9 +30,11 @@
 {# Recent Failures — collapsible (defaults open; remembers the user's toggle) #}
 {% if recent_failures %}
 {% call collapsible_section("Recent Failures (" ~ recent_failures|length ~ ")", "cameras_failures", icon_name="exclamation-triangle") %}
+{% if can_manage(request) %}
 <div class="flex justify-end mb-3">
     {{ danger_confirm("Clear failures", confirm_text="Click to clear all failures", loading_text="Clearing...", size="sm", icon_name="trash", hx_post="/cameras/failures/clear", hx_target="body", hx_swap="none") }}
 </div>
+{% endif %}
 <div class="rounded-xl border border-danger-500/30 bg-danger-500/5 overflow-hidden">
     {% call data_table([
         {"label": "Time"}, {"label": "Camera"}, {"label": "Int", "align": "right"}, {"label": "Error"}
