@@ -54,11 +54,21 @@ jobs:
 
       - name: Run the test suite
         run: |
+          set +e
           docker run --rm --init \
             -e PYTHONDONTWRITEBYTECODE=1 \
             -v "$PWD":/repo:ro -w /repo \
             luxupt-test:ci \
-            python -m pytest -c .github/pytest-ci.ini --rootdir=. -p no:cacheprovider
+            python -m pytest -c .github/pytest-ci.ini --rootdir=. -p no:cacheprovider \
+            > pytest.log 2>&1
+          rc=$?
+          cat pytest.log
+          summary=$(grep -E '^=+ .*(passed|failed|error).* =+$' pytest.log | tail -n 1 | tr -d '=' | xargs)
+          echo "## Test suite" >> "$GITHUB_STEP_SUMMARY"
+          echo "${summary:-no summary (exit $rc)}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" = 0 ]; then echo "::notice title=Test suite::${summary}"; \
+          else echo "::error title=Test suite::${summary:-pytest exited $rc}"; fi
+          exit $rc
 
       - uses: docker/setup-qemu-action@v3
 
