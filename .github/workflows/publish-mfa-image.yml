@@ -69,6 +69,13 @@ jobs:
           echo "${summary:-no summary (exit $rc)}" >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" = 0 ]; then echo "::notice title=Test suite::${summary}"; \
           else echo "::error title=Test suite::${summary:-pytest exited $rc}"; fi
+          # One annotation per failure (from -ra's short summary), readable without the raw log.
+          grep -E '^(FAILED|ERROR) ' pytest.log | head -n 30 | while IFS= read -r line; do
+            echo "::error title=Test failure::${line:0:900}"
+          done
+          if [ "$rc" != 0 ] && ! grep -qE '^(FAILED|ERROR) ' pytest.log; then
+            tail -n 40 pytest.log | tr '\n' ' ' | cut -c1-3000 | sed 's/^/::error title=pytest output::/'
+          fi
           exit $rc
 
       - uses: docker/setup-qemu-action@v3
