@@ -20,7 +20,11 @@ import time as time_module
 from datetime import datetime, time, timedelta
 from pathlib import Path
 
-from app.clients.protect_client import ProtectClient, ProtectRequestError
+from app.clients.protect_client import (
+    ProtectAuthError,
+    ProtectClient,
+    ProtectRequestError,
+)
 from app.core import config
 from app.crud.camera_crud import camera_crud
 from app.crud.capture_crud import capture_crud
@@ -232,6 +236,10 @@ class HistoricalFetchCoreService:
                         else:
                             failure_kind = "error"
                         error_msg = err_str[:500]
+                    except ProtectAuthError:
+                        # Not this frame's problem: no frame can be fetched until sign-in
+                        # works. Stop the job with the reason rather than fail every frame.
+                        raise
                     except Exception as e:
                         status = CaptureStatus.FAILED
                         failure_kind = "error"

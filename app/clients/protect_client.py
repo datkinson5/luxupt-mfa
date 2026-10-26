@@ -12,7 +12,9 @@ LuxUPT's RTSP+ffmpeg path was built to deliver because Ubiquiti's public API is
 resolution-capped on most camera models.
 
 The client maintains a single httpx.AsyncClient with a cookie jar; on 401 it
-re-logs in once and retries.
+re-logs in once and retries. The signed-in session is shared by every client
+for the same console and account in this process, so parallel historical jobs
+sign in once between them rather than once each.
 
 Sign-in works with a local Protect user, or with a Ubiquiti (SSO) account that
 has an authenticator app as its MFA method: give `totp_secret` and each login
@@ -24,7 +26,9 @@ app, injected via deps), not constructed per-request.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,7 +39,7 @@ import httpx
 import urllib3
 
 from app.utils.async_fs import path_mkdir
-from app.utils.totp import parse_secret, seconds_until_next_step, totp
+from app.utils.totp import DEFAULT_STEP_SECONDS, parse_secret, totp
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,51 @@ class ProtectMfaRequiredError(ProtectAuthError):
 # names MFA in the body; some versions use 401/403 instead, so the body decides.
 _MFA_STATUS_CODES = frozenset({400, 401, 403, 499})
 _MFA_MARKERS = ("MFA", "2FA", "TWO_FACTOR", "AUTHENTICATOR")
+
+# After a refused sign-in, further attempts fail at once for this long instead of
+# reaching the console: every refusal counts towards UniFi's lockout, and a job
+# retrying per frame would trip it in seconds. 429 is the lockout itself.
+AUTH_BACKOFF_SECONDS = 300
+LOCKOUT_BACKOFF_SECONDS = 900
+
+
+class _SharedSession:
+    """One console + account's sign-in, shared by every ProtectClient in the process.
+
+    Holds the session cookies, the lock that serialises sign-ins, the last TOTP
+    step sent (a code is accepted once, so a second sign-in in the same 30 s
+    must wait for the next one), and the back-off after a refusal.
+    """
+
+    def __init__(self) -> None:
+        self.cookies: httpx.Cookies | None = None
+        self.lock = asyncio.Lock()
+        self.last_totp_step = -1
+        self.failed_until = 0.0
+        self.failure = ""
+
+
+# Keyed by the running event loop as well, so a lock is never shared across loops.
+_SESSIONS: dict[tuple[int, str, str, str], _SharedSession] = {}
+
+
+def _shared_session(host: str, username: str, password: str, secret: str) -> _SharedSession:
+    loop = asyncio.get_running_loop()
+    # The credentials are part of the key, so fixing a wrong password or secret
+    # starts clean instead of waiting out the old back-off.
+    fingerprint = hashlib.sha256(f"{password}\0{secret}".encode()).hexdigest()
+    key = (id(loop), host, username, fingerprint)
+    session = _SESSIONS.get(key)
+    if session is None:
+        for stale in [k for k in _SESSIONS if k[0] != id(loop)]:
+            del _SESSIONS[stale]
+        session = _SESSIONS[key] = _SharedSession()
+    return session
+
+
+def _reset_shared_sessions() -> None:
+    """Forget every shared sign-in (tests)."""
+    _SESSIONS.clear()
 
 
 class ProtectClient:
@@ -91,6 +140,7 @@ class ProtectClient:
         self.password = password
         # Decoded once so a bad secret fails at construction, not mid-job.
         self._totp_key = parse_secret(totp_secret) if totp_secret else None
+        self._totp_secret = totp_secret
         self.verify_ssl = bool(verify_ssl)
         self.timeout = timeout
 
@@ -99,7 +149,7 @@ class ProtectClient:
 
         self._client: httpx.AsyncClient | None = None
         self._logged_in = False
-        self._login_lock = asyncio.Lock()
+        self._held: httpx.Cookies | None = None  # the shared session this client is using
 
     async def __aenter__(self) -> ProtectClient:
         await self.start()
@@ -117,58 +167,82 @@ class ProtectClient:
                 headers={"User-Agent": "LuxUPT/1.1"},
                 follow_redirects=True,
             )
+        shared = self._shared()
+        if not self._logged_in and shared.cookies is not None:
+            # Another client already signed in: reuse its session, no new login.
+            self._client.cookies.update(shared.cookies)
+            self._held = shared.cookies
+            self._logged_in = True
+
+    def _shared(self) -> _SharedSession:
+        return _shared_session(self.host, self.username, self.password, self._totp_secret)
 
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
         self._logged_in = False
+        self._held = None
 
-    async def _login(self) -> None:
-        """Log in via /api/auth/login; safe against concurrent callers.
+    async def _login(self, stale: httpx.Cookies | None = None) -> None:
+        """Sign in via /api/auth/login, once for every client sharing this account.
 
-        Holds an asyncio.Lock so a burst of concurrent fetches doesn't hammer
-        Protect with N parallel logins (which Protect rate-limits with HTTP 429).
+        Sign-ins are serialised on a process-wide lock. A caller that waited finds
+        the session another client established and adopts it. `stale` is the
+        session the caller saw rejected: if the shared one is still that, sign in
+        again; if it has already been replaced, adopt the replacement.
 
-        With a TOTP secret the code goes in the first request, so the console
-        never sends the account an email or push prompt. If the console still
-        answers with an MFA challenge — the code expired in flight, or this
-        console only takes a code after challenging — one retry follows with
-        the next code.
+        With a TOTP secret the code goes in the first request, so the console never
+        sends an email or push prompt. A code is never sent twice: a sign-in in the
+        same 30 s step as the last one waits for the next code. If the console still
+        answers with an MFA challenge, one retry follows with the next code.
+
+        After a refusal, further sign-ins fail at once (see AUTH_BACKOFF_SECONDS)
+        so a job does not hammer the console into locking the account.
         """
-        async with self._login_lock:
-            if self._logged_in:
-                # Another task already logged in while we were waiting
-                return
+        shared = self._shared()
+        async with shared.lock:
             assert self._client is not None
-
-            resp = await self._post_login(self._login_payload())
-            if self._is_mfa_challenge(resp) and self._totp_key is not None:
-                wait = seconds_until_next_step()
-                logger.info(
-                    "Protect asked for MFA; retrying with the next TOTP code",
-                    extra={"host": self.host, "wait_seconds": round(wait, 1)},
-                )
-                await asyncio.sleep(wait + 1)
-                resp = await self._post_login(self._login_payload())
-
-            if self._is_mfa_challenge(resp):
-                if self._totp_key is None:
-                    raise ProtectMfaRequiredError(
-                        "login needs MFA: this is a Ubiquiti account with MFA "
-                        "enabled. Set UNIFI_PROTECT_TOTP_SECRET to its "
-                        "authenticator secret, or use a local Protect user."
-                    )
-                raise ProtectMfaRequiredError(
-                    "login rejected the TOTP code: check UNIFI_PROTECT_TOTP_SECRET "
-                    "is this account's authenticator secret, that the authenticator "
-                    "app is its MFA method, and that the host clock is correct. "
-                    f"HTTP {resp.status_code} - {resp.text[:200]}"
-                )
-            if resp.status_code >= 400:
+            if shared.cookies is not None and shared.cookies is not stale:
+                self._client.cookies.update(shared.cookies)
+                self._held = shared.cookies
+                self._logged_in = True
+                return
+            remaining = shared.failed_until - time.monotonic()
+            if remaining > 0:
                 raise ProtectAuthError(
-                    f"login failed: HTTP {resp.status_code} - {resp.text[:200]}"
+                    f"{shared.failure} (not signing in again for {remaining:.0f}s, so the "
+                    "account is not locked out by repeated attempts)"
                 )
+
+            try:
+                resp = await self._post_login(await self._login_payload(shared))
+                if self._is_mfa_challenge(resp) and self._totp_key is not None:
+                    logger.info(
+                        "Protect asked for MFA; retrying with the next TOTP code",
+                        extra={"host": self.host},
+                    )
+                    resp = await self._post_login(await self._login_payload(shared))
+                self._raise_for_login(resp)
+            except ProtectAuthError as exc:
+                backoff = (
+                    LOCKOUT_BACKOFF_SECONDS
+                    if "429" in str(exc)
+                    else AUTH_BACKOFF_SECONDS
+                )
+                shared.failed_until = time.monotonic() + backoff
+                shared.failure = str(exc)
+                shared.cookies = None
+                logger.warning(
+                    "Protect sign-in refused; backing off",
+                    extra={"host": self.host, "user": self.username, "backoff_seconds": backoff},
+                )
+                raise
+
+            shared.failed_until = 0.0
+            shared.failure = ""
+            shared.cookies = httpx.Cookies(self._client.cookies)
+            self._held = shared.cookies
             self._logged_in = True
             logger.info(
                 "Protect login successful",
@@ -179,15 +253,47 @@ class ProtectClient:
                 },
             )
 
-    def _login_payload(self) -> dict[str, Any]:
-        """The login body; a fresh TOTP code is computed on every call."""
+    def _raise_for_login(self, resp: httpx.Response) -> None:
+        if self._is_mfa_challenge(resp):
+            if self._totp_key is None:
+                raise ProtectMfaRequiredError(
+                    "login needs MFA: this is a Ubiquiti account with MFA "
+                    "enabled. Set UNIFI_PROTECT_TOTP_SECRET to its "
+                    "authenticator secret, or use a local Protect user."
+                )
+            raise ProtectMfaRequiredError(
+                "login rejected the TOTP code: check UNIFI_PROTECT_TOTP_SECRET "
+                "is this account's authenticator secret, that the authenticator "
+                "app is its MFA method, and that the host clock is correct. "
+                f"HTTP {resp.status_code} - {resp.text[:200]}"
+            )
+        if resp.status_code >= 400:
+            raise ProtectAuthError(
+                f"login failed: HTTP {resp.status_code} - {resp.text[:200]}"
+            )
+
+    async def _login_payload(self, shared: _SharedSession) -> dict[str, Any]:
+        """The login body. With TOTP, the next unused code: waits out the current
+        30 s step if its code was already sent, since a code is accepted once."""
         payload: dict[str, Any] = {
             "username": self.username,
             "password": self.password,
             "rememberMe": True,
         }
         if self._totp_key is not None:
-            payload["token"] = totp(self._totp_key)
+            now = time.time()
+            step = int(now // DEFAULT_STEP_SECONDS)
+            if step <= shared.last_totp_step:
+                wait = (shared.last_totp_step + 1) * DEFAULT_STEP_SECONDS - now + 1
+                logger.info(
+                    "Waiting for the next TOTP code (the current one was already used)",
+                    extra={"host": self.host, "wait_seconds": round(wait, 1)},
+                )
+                await asyncio.sleep(wait)
+                now = time.time()
+                step = int(now // DEFAULT_STEP_SECONDS)
+            payload["token"] = totp(self._totp_key, at=now)
+            shared.last_totp_step = step
         return payload
 
     async def _post_login(self, payload: dict[str, Any]) -> httpx.Response:
@@ -222,7 +328,7 @@ class ProtectClient:
         if resp.status_code == 401:
             logger.info("Got 401, re-logging in", extra={"path": path})
             self._logged_in = False
-            await self._login()
+            await self._login(stale=self._held)
             resp = await self._client.request(method, url, **kwargs)
         return resp
 
@@ -326,7 +432,7 @@ class ProtectClient:
             if resp.status_code == 401:
                 await resp.aclose()
                 self._logged_in = False
-                await self._login()
+                await self._login(stale=self._held)
                 async with self._client.stream(
                     "GET", url, params=params, headers={"Accept": "video/mp4"}
                 ) as resp2:
