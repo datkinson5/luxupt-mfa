@@ -36,7 +36,7 @@ DURATION ({{ seconds | duration }}):
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
-from app.utils.timezones import business_day
+from app.utils.timezones import business_day, to_display
 
 if TYPE_CHECKING:
     from fastapi.templating import Jinja2Templates
@@ -77,6 +77,17 @@ def _get_format(fmt: str, format_dict: dict[str, str]) -> str:
     return fmt
 
 
+def _local(dt: datetime | time) -> datetime | time:
+    """An aware instant in the display zone (DISPLAY_TIMEZONE, else TZ); anything else as is.
+
+    Instants are stored UTC (UtcDateTime), so formatting them directly showed UTC: an hour
+    out in UK summer time. Naive datetimes, dates and times carry no zone and are left alone.
+    """
+    if isinstance(dt, datetime) and dt.tzinfo is not None:
+        return to_display(dt)
+    return dt
+
+
 def format_datetime(dt: datetime | None, fmt: str = "default") -> str:
     """Format a datetime as a full date/time string.
 
@@ -96,7 +107,7 @@ def format_datetime(dt: datetime | None, fmt: str = "default") -> str:
     if fmt == "relative":
         return timeago(dt)
     format_str = _get_format(fmt, DATETIME_FORMATS)
-    return dt.strftime(format_str)
+    return _local(dt).strftime(format_str)
 
 
 def format_date(dt: datetime | None, fmt: str = "default") -> str:
@@ -116,7 +127,7 @@ def format_date(dt: datetime | None, fmt: str = "default") -> str:
     if dt is None:
         return "--"
     format_str = _get_format(fmt, DATE_FORMATS)
-    return dt.strftime(format_str)
+    return _local(dt).strftime(format_str)
 
 
 def format_time(dt: datetime | time | None, fmt: str = "default") -> str:
@@ -136,7 +147,7 @@ def format_time(dt: datetime | time | None, fmt: str = "default") -> str:
     if dt is None:
         return "--"
     format_str = _get_format(fmt, TIME_FORMATS)
-    return dt.strftime(format_str)
+    return _local(dt).strftime(format_str)
 
 
 # Abbreviations for time units

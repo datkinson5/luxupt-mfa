@@ -5,11 +5,17 @@ crashing output in the templates the render smokes exercise. All are pure — no
 no wall-clock (timeago takes an explicit `now`).
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
+import pytest
+
+from app.core import config
 from app.web.template_filters import (
     duration,
     file_size_filter,
+    format_date,
+    format_datetime,
+    format_time,
     number_format,
     timeago,
 )
@@ -75,3 +81,30 @@ class TestTimeago:
         assert timeago(NOW - timedelta(minutes=5), NOW) == "5m ago"
         assert timeago(NOW - timedelta(hours=2), NOW) == "2h ago"
         assert timeago(NOW - timedelta(days=1), NOW) == "1d ago"
+
+
+class TestDisplayZone:
+    """Stored instants are UTC; the filters show them in the display zone (fork fix)."""
+
+    @pytest.fixture(autouse=True)
+    def _uk(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(config, "DISPLAY_TIMEZONE", "Europe/London")
+
+    def test_summer_time_is_an_hour_ahead_of_utc(self) -> None:
+        instant = datetime(2026, 10, 22, 13, 39, tzinfo=UTC)  # 14:39 BST
+        assert format_time(instant) == "2:39 pm"
+        assert format_time(instant, "24h") == "14:39"
+        assert format_datetime(instant, "compact") == "2026-10-22, 2:39 pm"
+
+    def test_winter_time_matches_utc(self) -> None:
+        instant = datetime(2026, 12, 1, 9, 5, tzinfo=UTC)
+        assert format_time(instant, "24h") == "09:05"
+
+    def test_date_rolls_over_at_local_midnight(self) -> None:
+        instant = datetime(2026, 7, 26, 23, 30, tzinfo=UTC)  # 00:30 BST on the 27th
+        assert format_date(instant, "%Y-%m-%d") == "2026-07-27"
+
+    def test_naive_values_and_plain_dates_are_untouched(self) -> None:
+        assert format_time(datetime(2026, 7, 26, 13, 0), "24h") == "13:00"
+        assert format_time(time(13, 0), "24h") == "13:00"
+        assert format_date(date(2026, 7, 26), "%Y-%m-%d") == "2026-07-26"
