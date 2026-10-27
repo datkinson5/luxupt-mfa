@@ -157,6 +157,12 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(
     os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10080")
 )  # 7 days
 
+# Shift every live capture tick later by this many seconds (fork). Ticks normally fall on
+# the clock (:00, :15, ...); a second instance capturing the same cameras sets this so the
+# two do not hit the NVR in the same second. Applied modulo each interval, so pick a value
+# that is not a multiple of the shortest interval in use (e.g. 7 alongside 15 s captures).
+CAPTURE_OFFSET_SECONDS = max(0, int(os.getenv("CAPTURE_OFFSET_SECONDS", "0")))
+
 # =============================================================================
 # MICROSOFT ENTRA ID SIGN-IN (optional; fork feature)
 # =============================================================================

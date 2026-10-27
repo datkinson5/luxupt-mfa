@@ -52,3 +52,29 @@ class TestGh4Regression:
         assert current_aligned_timestamp(boundary, 15) == boundary
         assert current_aligned_timestamp(boundary, 30) == boundary
         assert current_aligned_timestamp(boundary, 60) == boundary
+
+
+class TestCaptureOffset:
+    """CAPTURE_OFFSET_SECONDS shifts every tick later, so a second instance is out of step."""
+
+    @pytest.mark.parametrize("interval", INTERVALS)
+    @pytest.mark.parametrize("offset", [0, 1, 7, 30, 59, 3601])
+    def test_ticks_keep_their_spacing_and_land_on_the_offset(
+        self, interval: int, offset: int
+    ) -> None:
+        for now in range(NOW, NOW + 2 * interval + 3):
+            nxt = next_aligned_timestamp(now, interval, offset)
+            cur = current_aligned_timestamp(now, interval, offset)
+            assert cur <= now < nxt
+            assert nxt - cur == interval
+            assert nxt % interval == offset % interval
+
+    def test_thirty_seconds_puts_minute_captures_on_the_half_minute(self) -> None:
+        on_the_minute = 1_800_000_000 - (1_800_000_000 % 60)
+        assert next_aligned_timestamp(on_the_minute, 60, 30) == on_the_minute + 30
+        assert next_aligned_timestamp(on_the_minute, 60) == on_the_minute + 60
+
+    def test_offset_is_taken_per_interval(self) -> None:
+        # 30 s is a whole 15 s step: on a 15 s interval it changes nothing.
+        assert next_aligned_timestamp(NOW, 15, 30) == next_aligned_timestamp(NOW, 15)
+        assert next_aligned_timestamp(NOW, 15, 7) % 15 == 7

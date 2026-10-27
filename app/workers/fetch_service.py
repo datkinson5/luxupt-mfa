@@ -27,24 +27,29 @@ from app.utils.timezones import business_day, to_display
 logger = logging.getLogger(__name__)
 
 
-def current_aligned_timestamp(now: int, interval: int) -> int:
+def current_aligned_timestamp(now: int, interval: int, offset: int = 0) -> int:
     """Most recent epoch-aligned capture tick at or before ``now``, for ``interval``.
 
     Anchors to the Unix epoch (t=0): ticks fall at multiples of ``interval``. The
     epoch divides every interval, so intervals stay mutually phase-aligned (15s and
     60s both fire at :00) with no global LCM — the design that fixed GH #4.
+
+    ``offset`` (CAPTURE_OFFSET_SECONDS, fork) shifts every tick later by that many seconds,
+    taken modulo the interval, so a second instance can capture out of step with the first.
     """
-    return (now // interval) * interval
+    phase = offset % interval
+    return ((now - phase) // interval) * interval + phase
 
 
-def next_aligned_timestamp(now: int, interval: int) -> int:
+def next_aligned_timestamp(now: int, interval: int, offset: int = 0) -> int:
     """Next epoch-aligned capture tick strictly after ``now``, for ``interval``.
 
     Bounded: the result is always within ``interval`` seconds of ``now``, so no set
     or count of intervals can push the first capture far into the future (GH #4 —
     the old LCM anchor grew without bound as intervals diversified).
     """
-    return ((now // interval) + 1) * interval
+    phase = offset % interval
+    return (((now - phase) // interval) + 1) * interval + phase
 
 
 class FetchService:
@@ -626,7 +631,9 @@ class FetchService:
         # LCM — any number/mix of intervals stays synchronized and none blocks the
         # others (fixes GH #4). First capture is the next epoch-aligned boundary.
         now_ts = int(time.time())
-        next_aligned_ts = next_aligned_timestamp(now_ts, interval)
+        next_aligned_ts = next_aligned_timestamp(
+            now_ts, interval, config.CAPTURE_OFFSET_SECONDS
+        )
 
         # Wait for first execution
         sleep_time = next_aligned_ts - time.time()
@@ -665,7 +672,9 @@ class FetchService:
             # Snap to the current epoch-aligned timestamp using integer division
             # This is robust against asyncio.sleep overshoot — no exact-second polling needed
             now_ts = int(time.time())
-            current_aligned_ts = current_aligned_timestamp(now_ts, interval)
+            current_aligned_ts = current_aligned_timestamp(
+                now_ts, interval, config.CAPTURE_OFFSET_SECONDS
+            )
 
             # Only fire if we've reached or passed the next expected timestamp
             if current_aligned_ts < next_aligned_ts:
@@ -782,7 +791,9 @@ class FetchService:
                 )
                 # Re-sync to current time to avoid firing stale timestamps
                 now_ts = int(time.time())
-                next_aligned_ts = next_aligned_timestamp(now_ts, interval)
+                next_aligned_ts = next_aligned_timestamp(
+                    now_ts, interval, config.CAPTURE_OFFSET_SECONDS
+                )
 
     def _filter_cameras_for_interval(
         self,
