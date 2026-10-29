@@ -9,6 +9,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    JSON,
     Integer,
     String,
     Text,
@@ -61,6 +62,9 @@ class Timelapse(Base, TimestampMixin):
     thumbnail_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Fork: "weekly" / "monthly" / "yearly" for a roll-up timelapse; null for the rest.
     rollup_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Fork: what the frame checks found (app/services/core/frame_quality.py); null when
+    # no check was switched on for this build.
+    quality_report: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Status tracking
     status: Mapped[TimelapseStatus] = mapped_column(

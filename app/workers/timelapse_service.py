@@ -27,11 +27,18 @@ from app.db import maintenance as db_maintenance
 from app.db.database import get_db_context
 from app.models.enum_model import ScheduleSource
 from app.services.core.capture_cleanup_core_service import CaptureCleanupCoreService
+from app.services.core.frame_quality import (
+    QualityReport,
+    QualitySettings,
+    remember_report,
+    screen_frames,
+    screen_rollup,
+)
 from app.services.core.rollup_core import (
     RollupPlan,
     frame_moment,
     output_name,
-    select_frames,
+    select_frame_candidates,
 )
 from app.utils import async_fs, ffmpeg
 from app.utils.time_windows import in_window, is_all_day, window_label
@@ -781,6 +788,41 @@ class TimelapseService:
             return settings.timelapse_active_start, settings.timelapse_active_end
 
     @staticmethod
+    async def _quality_settings() -> QualitySettings:
+        """The frame checks (fork); all off by default."""
+        async with get_db_context() as db:
+            settings = await scheduler_settings_crud.get_settings(db)
+            return QualitySettings.from_scheduler(settings)
+
+    async def _screen(
+        self, frames: list[Path], camera_safe_name: str, interval: int
+    ) -> tuple[list[Path], QualityReport | None]:
+        """Run the switched-on frame checks over a build's frames (fork). With every check
+        off this does nothing; report-only returns the frames unchanged."""
+        quality = await self._quality_settings()
+        if not quality.any or not frames:
+            return frames, None
+        kept, report = await asyncio.to_thread(screen_frames, frames, quality)
+        self._log_quality(report, camera_safe_name, interval)
+        return kept, report
+
+    @staticmethod
+    def _log_quality(report: QualityReport, camera_safe_name: str, interval: int) -> None:
+        logger.info(
+            "Frame checks",
+            extra={
+                "camera": camera_safe_name,
+                "interval": interval,
+                "checked": report.checked,
+                "flagged": report.flagged,
+                "excluded": report.excluded,
+                "replaced": report.replaced,
+                "mode": "exclude" if report.exclude else "report",
+                "kept_all": report.kept_all,
+            },
+        )
+
+    @staticmethod
     def _within_window(
         files: list[Path], window: tuple[dt_time, dt_time]
     ) -> list[Path]:
@@ -954,6 +996,14 @@ class TimelapseService:
                 )
                 return "exists"
 
+        # Frame checks (fork): only when one is switched on. They need an explicit list.
+        quality = await self._quality_settings()
+        if quality.any:
+            frame_files, report = await self._screen(
+                sorted(image_files, key=lambda p: p.name), camera_safe_name, interval
+            )
+            remember_report(output_path, report)
+
         # Create time-lapse video using database encoding settings
         success = await self._create_video(
             images_path,
@@ -965,6 +1015,8 @@ class TimelapseService:
             job_id=job_id,
             frame_files=frame_files,
         )
+        if not success:
+            remember_report(output_path, None)
 
         if success and not keep_images:
             # Delete source images, thumbnails, and database records
@@ -1350,9 +1402,12 @@ class TimelapseService:
             },
         )
 
+        all_frames, report = await self._screen(all_frames, camera_safe_name, interval)
+        remember_report(output_path, report)
+
         # Pass the sorted file list directly — _create_video writes an ffconcat file
         # and feeds it to ffmpeg via the concat demuxer. No staging dir, no symlinks.
-        return await self._create_video(
+        success = await self._create_video(
             images_path=videos_path,  # unused when frame_files is provided, but type expects it
             output_path=output_path,
             camera_safe_name=camera_safe_name,
@@ -1362,6 +1417,9 @@ class TimelapseService:
             job_id=job_id,
             frame_files=all_frames,
         )
+        if not success:
+            remember_report(output_path, None)
+        return success
 
     async def create_rollup_timelapse(
         self,
@@ -1409,9 +1467,15 @@ class TimelapseService:
                     "using": image_format,
                 },
             )
-        frames = select_frames(
+        candidates = select_frame_candidates(
             by_format[image_format], display_zone(), start_date, end_date, plan
         )
+        frames = [slot[0] for slot in candidates]
+        report: QualityReport | None = None
+        quality = await self._quality_settings()
+        if quality.any and len(frames) >= 2:
+            frames, report = await asyncio.to_thread(screen_rollup, candidates, quality)
+            self._log_quality(report, camera_safe_name, interval)
         if len(frames) < 2:
             logger.info(
                 "Roll-up: not enough frames in the period",
@@ -1438,6 +1502,7 @@ class TimelapseService:
             camera_safe_name, interval, plan.kind, start_date, end_date
         )
         await async_fs.path_unlink(output_path, missing_ok=True)
+        remember_report(output_path, report)
 
         logger.info(
             "Encoding roll-up",
@@ -1450,7 +1515,7 @@ class TimelapseService:
                 "end": end_date.isoformat(),
             },
         )
-        return await self._create_video(
+        success = await self._create_video(
             images_path=videos_path,  # unused with frame_files
             output_path=output_path,
             camera_safe_name=camera_safe_name,
@@ -1460,6 +1525,9 @@ class TimelapseService:
             job_id=job_id,
             frame_files=frames,
         )
+        if not success:
+            remember_report(output_path, None)
+        return success
 
     async def _update_progress(
         self,

@@ -7,7 +7,7 @@ distinct from timelapse artifacts and from the job lifecycle. Mounted under /tim
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, Request, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 
 from app.web.auth import get_current_user
@@ -64,7 +64,7 @@ async def save_scheduler_settings(
     extras = {
         key: value
         for key, value in form.items()
-        if key.startswith(("timelapse_active_", "rollup_", "rollups_form"))
+        if key.startswith(("timelapse_active_", "rollup_", "rollups_form", "quality_"))
         and isinstance(value, str)
     }
     context = await view_service.save_scheduler_settings(
@@ -103,4 +103,38 @@ async def run_rollups_now(
     context = await view_service.start_rollups_now()
     return templates.TemplateResponse(
         request, "partials/timelapses/rollups_result.html", context
+    )
+
+
+@router.post("/scheduler/frame-checks/run", response_class=HTMLResponse)
+async def run_frame_checks_now(
+    request: Request,
+    templates: TemplatesDep,
+    view_service: TimelapsesViewDep,
+    user: str = Depends(get_current_user),
+) -> Response:
+    """Check yesterday's frames (fork): what the switched-on frame checks would flag."""
+    context = await view_service.check_frames_now()
+    return templates.TemplateResponse(
+        request, "partials/timelapses/frame_checks_result.html", context
+    )
+
+
+@router.get("/scheduler/frame-checks/frame/{camera}/{interval}/{year}/{month}/{day}/{name}")
+async def frame_check_preview(
+    camera: str,
+    interval: int,
+    year: str,
+    month: str,
+    day: str,
+    name: str,
+    view_service: TimelapsesViewDep,
+    user: str = Depends(get_current_user),
+) -> Response:
+    """A small preview of a frame the checks flagged (fork)."""
+    data = await view_service.frame_check_preview(camera, interval, year, month, day, name)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Frame not found")
+    return Response(
+        content=data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"}
     )

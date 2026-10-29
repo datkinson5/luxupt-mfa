@@ -105,14 +105,19 @@ def frame_moment(path: Path, zone: ZoneInfo) -> datetime | None:
     return datetime.fromtimestamp(seconds, UTC).astimezone(zone)
 
 
-def select_frames(
+def select_frame_candidates(
     paths: Iterable[Path],
     zone: ZoneInfo,
     start: date,
     end: date,
     plan: RollupPlan,
-) -> list[Path]:
-    """The frames a roll-up uses, in time order."""
+) -> list[list[Path]]:
+    """The frames a roll-up could use for each slot, in slot order, best first.
+
+    A slot is one N-minute step of a day (candidates in time order) or, once a day, the
+    whole day (candidates nearest the target time first). The first of each is the pick;
+    the rest stand in when the frame checks leave the pick out.
+    """
     dated: list[tuple[datetime, Path]] = []
     for path in paths:
         moment = frame_moment(path, zone)
@@ -123,25 +128,31 @@ def select_frames(
         dated.append((moment, path))
     dated.sort(key=lambda item: item[0])
 
-    if plan.step_minutes >= ONCE_A_DAY:
-        best: dict[date, tuple[float, datetime, Path]] = {}
-        for moment, path in dated:
-            target = datetime.combine(moment.date(), plan.target_time, tzinfo=zone)
-            distance = abs((moment - target).total_seconds())
-            current = best.get(moment.date())
-            if current is None or distance < current[0]:
-                best[moment.date()] = (distance, moment, path)
-        return [path for _, _, path in sorted(best.values(), key=lambda item: item[1])]
-
+    slots: dict[tuple[date, int], list[tuple[float, Path]]] = {}
+    once_a_day = plan.step_minutes >= ONCE_A_DAY
     step = max(1, plan.step_minutes)
-    chosen: list[Path] = []
-    seen: set[tuple[date, int]] = set()
     for moment, path in dated:
-        slot = (moment.date(), (moment.hour * 60 + moment.minute) // step)
-        if slot not in seen:
-            seen.add(slot)
-            chosen.append(path)
-    return chosen
+        if once_a_day:
+            target = datetime.combine(moment.date(), plan.target_time, tzinfo=zone)
+            key = (moment.date(), 0)
+            rank = abs((moment - target).total_seconds())
+        else:
+            key = (moment.date(), (moment.hour * 60 + moment.minute) // step)
+            rank = moment.timestamp()
+        slots.setdefault(key, []).append((rank, path))
+    # Stable sort: equal distances keep time order, so the earlier frame wins a tie.
+    return [[p for _, p in sorted(slots[key], key=lambda item: item[0])] for key in sorted(slots)]
+
+
+def select_frames(
+    paths: Iterable[Path],
+    zone: ZoneInfo,
+    start: date,
+    end: date,
+    plan: RollupPlan,
+) -> list[Path]:
+    """The frames a roll-up uses, in time order."""
+    return [slot[0] for slot in select_frame_candidates(paths, zone, start, end, plan)]
 
 
 def output_name(camera: str, interval: int, kind: RollupKind, start: date, end: date) -> str:

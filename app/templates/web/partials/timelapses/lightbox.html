@@ -34,6 +34,12 @@
                         {% if timelapse.frame_count %}
                         <span>{{ timelapse.frame_count }} frames</span>
                         {% endif %}
+                        {% if timelapse.quality_report is defined and timelapse.quality_report %}
+                        {% set q = timelapse.quality_report %}
+                        <span title="Frame checks: {{ q.checked }} checked{% for k, n in (q.flagged or {}).items() %}, {{ n }} {{ {'dark': 'dark', 'blur': 'blurred', 'rain': 'rain on lens'}.get(k, k) }}{% endfor %}">
+                            {% if q.flagged_frames %}{{ q.flagged_frames }} flagged{% else %}no frames flagged{% endif %}{% if q.exclude and (q.excluded or q.replaced) %} ({{ q.excluded }} left out{% if q.replaced %}, {{ q.replaced }} swapped{% endif %}){% elif q.exclude and q.kept_all %} (kept all: too few left){% elif not q.exclude and q.flagged_frames %} (report only){% endif %}
+                        </span>
+                        {% endif %}
                         {% if timelapse.duration_seconds %}
                         <span>{{ timelapse.duration_seconds|round(1) }}s</span>
                         {% endif %}

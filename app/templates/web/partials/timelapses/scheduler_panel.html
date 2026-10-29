@@ -103,6 +103,30 @@
                 </div>
                 {% endcall %}
 
+                <!-- ===== FRAME CHECKS (fork) ===== -->
+                {% call section_card('Frame Checks') %}
+                <div class="space-y-4">
+                    <input type="hidden" name="quality_form" value="1">
+                    <p class="text-xs text-surface-200">Score each frame before it goes into a timelapse (daily, Protect recordings and roll-ups). Blur and rain are judged against that day's typical frame from the same camera. Every check is off until you switch it on.</p>
+                    {% for item in quality_checks %}
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end {{ 'border-t border-surface-400/20 pt-4' if not loop.first }}">
+                        <div class="sm:col-span-2">
+                            {{ toggle_row("quality_" ~ item.check.value ~ "_enabled", item.label, description=item.description, checked=quality[item.check.value]) }}
+                        </div>
+                        {{ text_input(item.threshold, label=item.threshold_label, type="number", value=settings[item.threshold] if settings[item.threshold] is defined else "", align="center", suffix=item.suffix, help=item.help, extra_attrs='min="5" max="120"') }}
+                    </div>
+                    {% endfor %}
+                    <div class="border-t border-surface-400/20 pt-4">
+                        {{ toggle_row("quality_exclude", "Leave flagged frames out", description="Off: report only (every frame is still used, and each timelapse shows what was found). On: flagged frames are dropped; a roll-up uses the next good frame in the same slot.", checked=quality.exclude) }}
+                    </div>
+                    <div class="border-t border-surface-400/20 pt-4 flex flex-col items-start gap-2">
+                        {{ secondary("Check yesterday's frames", icon_name="eye", hx_attrs={"hx-post": "/timelapses/scheduler/frame-checks/run", "hx-target": "#frame-checks-result", "hx-swap": "innerHTML"}) }}
+                        <span class="text-xs text-surface-300">Scores a sample of yesterday's saved frames with the saved settings and shows examples. Builds nothing.</span>
+                    </div>
+                    <div id="frame-checks-result"></div>
+                </div>
+                {% endcall %}
+
                 <!-- ===== CAMERAS & INTERVALS SECTION ===== -->
                 {% call section_card('Cameras & Intervals') %}
                 <div class="space-y-4">

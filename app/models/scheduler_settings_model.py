@@ -126,5 +126,15 @@ class SchedulerSettings(Base, TimestampMixin):
         Time, default=time(12, 0), nullable=False
     )
 
+    # Frame checks (see app/services/core/frame_quality.py): each off by default. With
+    # quality_exclude off they only report; on, flagged frames are left out of videos.
+    quality_dark_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    quality_blur_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    quality_rain_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    quality_exclude: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    quality_dark_level: Mapped[int] = mapped_column(Integer, default=40, nullable=False)
+    quality_blur_percent: Mapped[int] = mapped_column(Integer, default=40, nullable=False)
+    quality_rain_percent: Mapped[int] = mapped_column(Integer, default=25, nullable=False)
+
     def __repr__(self) -> str:
         return f"<SchedulerSettings(enabled={self.enabled}, run_time={self.run_time})>"

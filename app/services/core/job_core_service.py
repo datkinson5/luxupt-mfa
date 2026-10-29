@@ -17,6 +17,7 @@ from app.crud import job_crud, scheduler_settings_crud, timelapse_crud
 from app.crud.fetch_settings_crud import fetch_settings_crud
 from app.db.database import get_db_context
 from app.models.job_model import Job
+from app.services.core.frame_quality import take_report
 from app.services.core.historical_fetch_core_service import (
     HistoricalFetchCoreService,
     HistoricalJobCanceled,
@@ -659,6 +660,7 @@ class JobProcessor:
                         error="Output file is corrupted (decode validation failed). The file has been deleted.",
                     )
                     await db.commit()
+                take_report(output_path)
                 return
 
             # Generate thumbnail
@@ -702,6 +704,7 @@ class JobProcessor:
                         else None
                     ),
                     "rollup_kind": rollup_kind.value if rollup_kind is not None else None,
+                    "quality_report": take_report(output_path),
                     "interval": interval,
                     "frame_count": frame_count,
                     "frame_rate": frame_rate,

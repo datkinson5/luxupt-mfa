@@ -1,0 +1,35 @@
+{# "Check yesterday's frames" result (fork) #}
+{% from "macros/alerts.html" import alert_block %}
+
+{% if results %}
+<div class="space-y-4 mt-2">
+    <p class="text-xs text-surface-300">{{ day | date }} — up to 240 frames per camera, spread through the active hours.</p>
+    {% for row in results %}
+    <div class="rounded-lg border border-surface-500 bg-surface-700/50 p-3 space-y-2">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <span class="text-sm font-medium text-white">{{ row.camera|replace('_', ' ') }} · {{ row.interval }}s</span>
+            <span class="text-xs text-surface-300">{{ row.checked }}{% if row.checked != row.total %} of {{ row.total }}{% endif %} frames checked · {{ row.flagged_frames }} flagged</span>
+        </div>
+        <div class="flex flex-wrap gap-2 text-xs">
+            {% for f in row.flagged %}
+            <span class="rounded px-1.5 py-0.5 {{ 'bg-warning-500/15 text-warning-300' if f.count else 'bg-surface-600 text-surface-200' }}">{{ f.label }}: {{ f.count }}</span>
+            {% endfor %}
+        </div>
+        {% if row.examples %}
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {% for ex in row.examples %}
+            <figure class="space-y-1">
+                <img src="{{ ex.url }}" alt="{{ ex.label }} frame at {{ ex.time }}" loading="lazy" class="w-full rounded border border-surface-500">
+                <figcaption class="text-[11px] text-surface-300">{{ ex.label }} · {{ ex.time }}</figcaption>
+            </figure>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+{% call alert_block(type="warning", title="Nothing to check") %}
+{{ reason }}
+{% endcall %}
+{% endif %}

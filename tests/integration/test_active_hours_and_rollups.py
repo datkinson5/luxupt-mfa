@@ -7,6 +7,7 @@ not stand in for the day's own timelapse.
 
 from __future__ import annotations
 
+import re
 import shutil
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, time, timedelta
@@ -305,3 +306,181 @@ async def test_period_without_frames_fails_with_a_reason(durable_db: Maker) -> N
     assert job is not None and job.status == "failed"
     assert "Not enough frames" in (job.error or "")
     assert await _weekly_rollups(durable_db) == []
+
+
+# --- frame checks (fork) --------------------------------------------------------------------
+
+
+def _write_site_frames(days: list[date], every_minutes: int, *, dark_until: int = 6) -> None:
+    """Frames that are black before ``dark_until`` o'clock (night) and lit after."""
+    zone = display_zone()
+    for day in days:
+        folder = config.IMAGE_OUTPUT_PATH / CAMERA / "60s" / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
+        folder.mkdir(parents=True, exist_ok=True)
+        start = datetime.combine(day, time(0, 0), tzinfo=zone)
+        for i in range(24 * 60 // every_minutes):
+            moment = start + timedelta(minutes=i * every_minutes)
+            colour = (4, 4, 6) if moment.hour < dark_until else (120 + i % 50, 110, 150)
+            Image.new("RGB", (64, 48), colour).save(
+                folder / f"{CAMERA}_{int(moment.timestamp())}.jpg", quality=85
+            )
+
+
+async def test_frame_checks_are_off_by_default_and_save(
+    auth_client: AsyncClient, db: AsyncSession
+) -> None:
+    s = await scheduler_settings_crud.get_settings(db)
+    assert not (s.quality_dark_enabled or s.quality_blur_enabled or s.quality_rain_enabled)
+    assert not s.quality_exclude
+    assert (s.quality_dark_level, s.quality_blur_percent, s.quality_rain_percent) == (40, 40, 25)
+
+    panel = await auth_client.get("/timelapses/scheduler")
+    for text_ in ("Frame Checks", "Dark frames", "Blurred frames", "Rain on the lens",
+                  "Leave flagged frames out", "Check yesterday&#39;s frames"):
+        assert text_ in panel.text, text_
+
+    resp = await auth_client.post(
+        "/timelapses/scheduler",
+        data={
+            "enabled": "on",
+            "run_time": "01:00",
+            "quality_form": "1",
+            "quality_dark_enabled": "true",
+            "quality_rain_enabled": "true",
+            "quality_dark_level": "500",  # clamped to 120
+            "quality_blur_percent": "35",
+            "quality_rain_percent": "not a number",  # ignored
+        },
+    )
+    assert resp.status_code == 200
+    db.expire_all()
+    s = await scheduler_settings_crud.get_settings(db)
+    assert s.quality_dark_enabled and s.quality_rain_enabled and not s.quality_blur_enabled
+    assert not s.quality_exclude
+    assert (s.quality_dark_level, s.quality_blur_percent, s.quality_rain_percent) == (120, 35, 25)
+
+    # A form without the section leaves the toggles alone.
+    await auth_client.post("/timelapses/scheduler", data={"enabled": "on", "run_time": "01:00"})
+    db.expire_all()
+    s = await scheduler_settings_crud.get_settings(db)
+    assert s.quality_dark_enabled and s.quality_rain_enabled
+
+
+async def test_check_yesterdays_frames_reports_and_previews(
+    auth_client: AsyncClient, db: AsyncSession
+) -> None:
+    from app.utils.timezones import business_day
+
+    off = await auth_client.post("/timelapses/scheduler/frame-checks/run")
+    assert off.status_code == 200 and "Switch on at least one check" in off.text
+
+    db.add(
+        Camera(
+            camera_id="rollup-cam-uuid",
+            name="Rollup Cam",
+            safe_name=CAMERA,
+            is_active=True,
+            is_connected=True,
+            capture_method=CaptureMethod.AUTO,
+            rtsp_quality="high",
+            enabled_intervals=[60],
+            first_discovered_at=datetime.now(UTC),
+        )
+    )
+    settings = await scheduler_settings_crud.get_settings(db)
+    settings.quality_dark_enabled = True
+    settings.enabled_intervals = [60]
+    await db.flush()
+    yesterday = business_day() - timedelta(days=1)
+    _write_site_frames([yesterday], every_minutes=30)
+
+    resp = await auth_client.post("/timelapses/scheduler/frame-checks/run")
+    assert resp.status_code == 200
+    assert "Rollup Cam" in resp.text and "48 frames checked" in resp.text
+    assert "Dark: 12" in resp.text
+    url = re.search(r'src="(/timelapses/scheduler/frame-checks/frame/[^"]+)"', resp.text)
+    assert url is not None
+    url = url.group(1)
+    image = await auth_client.get(url)
+    assert image.status_code == 200 and image.headers["content-type"] == "image/jpeg"
+    bogus = await auth_client.get(
+        f"/timelapses/scheduler/frame-checks/frame/{CAMERA}/60/2026/10/20/..%2F..%2Fx_1.jpg"
+    )
+    assert bogus.status_code == 404
+
+
+async def test_reader_cannot_run_frame_checks(client: AsyncClient, db: AsyncSession) -> None:
+    from app.crud.user_crud import user_crud
+
+    await user_crud.create_user(db, username="admin", password="a-long-password-123")
+    await user_crud.create_user(db, username="viewer", password="a-long-password-123", is_admin=False)
+    await client.post("/login", data={"username": "viewer", "password": "a-long-password-123"})
+    assert (await client.post("/timelapses/scheduler/frame-checks/run")).status_code == 403
+
+
+async def test_rollup_leaves_dark_frames_out_and_records_it(durable_db: Maker) -> None:
+    await _camera(durable_db)
+    _write_site_frames([date(2026, 10, 19), date(2026, 10, 20)], every_minutes=20)
+    async with durable_db() as s:
+        settings = await scheduler_settings_crud.get_settings(s)
+        settings.quality_dark_enabled = True
+        settings.quality_exclude = True
+        await s.commit()
+
+    job_id = await _build(durable_db, WEEK)
+    job = await _job(durable_db, job_id)
+    assert job is not None and job.status == "completed", job.error if job else None
+    [rollup] = await _weekly_rollups(durable_db)
+    assert rollup.frame_count == 36  # 24 hourly slots a day, 00:00-06:00 dark and dropped
+    report = rollup.quality_report
+    assert report["checks"] == ["dark"] and report["exclude"] is True
+    assert report["checked"] == 48 and report["flagged"] == {"dark": 12}
+    assert report["excluded"] == 12 and report["replaced"] == 0
+
+
+async def test_lightbox_shows_what_the_checks_found(
+    auth_client: AsyncClient, db: AsyncSession
+) -> None:
+    row = Timelapse(
+        camera_id="rollup-cam-uuid",
+        camera_safe_name=CAMERA,
+        timelapse_date=WEEK[0],
+        interval=60,
+        frame_count=36,
+        frame_rate=24,
+        duration_seconds=1.5,
+        status="completed",
+        quality_report={
+            "exclude": True, "checks": ["dark"], "checked": 48, "flagged_frames": 12,
+            "excluded": 12, "replaced": 0, "kept_all": False, "sampled_from": None,
+            "flagged": {"dark": 12}, "examples": {"dark": []},
+        },
+    )
+    db.add(row)
+    await db.flush()
+    box = await auth_client.get(f"/timelapses/{row.id}/lightbox")
+    assert box.status_code == 200, box.text[:300]
+    assert "12 flagged" in box.text and "12 left out" in box.text
+
+
+async def test_report_only_keeps_every_frame(durable_db: Maker) -> None:
+    await _camera(durable_db)
+    _write_site_frames([date(2026, 10, 19)], every_minutes=20)
+    async with durable_db() as s:
+        settings = await scheduler_settings_crud.get_settings(s)
+        settings.quality_dark_enabled = True
+        await s.commit()
+
+    await _build(durable_db, WEEK)
+    [rollup] = await _weekly_rollups(durable_db)
+    assert rollup.frame_count == 24
+    assert rollup.quality_report["flagged"] == {"dark": 6}
+    assert rollup.quality_report["excluded"] == 0
+
+
+async def test_no_checks_no_report(durable_db: Maker) -> None:
+    await _camera(durable_db)
+    _write_site_frames([date(2026, 10, 19)], every_minutes=30)
+    await _build(durable_db, WEEK)
+    [rollup] = await _weekly_rollups(durable_db)
+    assert rollup.quality_report is None and rollup.frame_count == 24

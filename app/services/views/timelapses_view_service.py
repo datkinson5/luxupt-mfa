@@ -1,5 +1,6 @@
 """Timelapses view service for preparing timelapse template data."""
 
+import asyncio
 import logging
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -16,6 +17,8 @@ from app.models.enum_model import ScheduleSource
 from app.schemas.pagination_schema import build_pagination
 from app.services.core.camera_core_service import CameraCoreService
 from app.services.core.capture_core_service import CaptureCoreService
+from app.services.core.frame_check_core_service import check_saved_frames, preview
+from app.services.core.frame_quality import Check, QualitySettings
 from app.services.core.job_core_service import JobCoreService, get_job_processor
 from app.services.core.rollup_core import RollupKind, latest_period
 from app.services.core.rollup_jobs_core_service import create_rollup_jobs
@@ -38,6 +41,42 @@ logger = logging.getLogger(__name__)
 
 
 # Fork: roll-up frame spacing choices (minutes; 1440 = once a day, nearest the target time).
+# Frame checks (fork): (field, lowest, highest) for the three thresholds.
+QUALITY_LIMITS = (
+    ("quality_dark_level", 5, 120),
+    ("quality_blur_percent", 5, 95),
+    ("quality_rain_percent", 5, 95),
+)
+QUALITY_CHECKS = [
+    {
+        "check": Check.DARK,
+        "label": "Dark frames",
+        "description": "Night, or the lens covered: average brightness under the dark level.",
+        "threshold": "quality_dark_level",
+        "threshold_label": "Dark level",
+        "suffix": "/ 255",
+        "help": "Average brightness 0–255. Default 40.",
+    },
+    {
+        "check": Check.BLUR,
+        "label": "Blurred frames",
+        "description": "The whole picture soft: focus hunting, fog, a smeared lens.",
+        "threshold": "quality_blur_percent",
+        "threshold_label": "Flag under",
+        "suffix": "% sharp",
+        "help": "Sharpness vs the day's typical frame. Default 40%.",
+    },
+    {
+        "check": Check.RAIN,
+        "label": "Rain on the lens",
+        "description": "Part of the picture soft while the rest is sharp, as water drops look.",
+        "threshold": "quality_rain_percent",
+        "threshold_label": "Flag when",
+        "suffix": "% soft",
+        "help": "Share of the detailed picture gone soft. Default 25%.",
+    },
+]
+
 ROLLUP_STEP_OPTIONS = [
     {"value": 15, "label": "Every 15 minutes"},
     {"value": 30, "label": "Every 30 minutes"},
@@ -286,6 +325,8 @@ class TimelapsesViewService:
                 }
                 for kind in RollupKind
             ],
+            "quality": QualitySettings.from_scheduler(settings),
+            "quality_checks": QUALITY_CHECKS,
         }
 
     async def update_scheduler_settings(self, update_data: dict[str, Any]) -> None:
@@ -392,7 +433,29 @@ class TimelapsesViewService:
                 data[f"rollup_{kind.value}_enabled"] = (
                     form.get(f"rollup_{kind.value}_enabled") is not None
                 )
+        # Frame checks: toggles only from the full panel (quality_form), like the roll-ups.
+        if form.get("quality_form"):
+            for name in ("quality_exclude", *(f"quality_{c.value}_enabled" for c in Check)):
+                data[name] = form.get(name) is not None
+        for name, low, high in QUALITY_LIMITS:
+            value = form.get(name)
+            if value not in (None, ""):
+                try:
+                    data[name] = max(low, min(high, int(value)))
+                except ValueError:
+                    pass
         return data
+
+    async def check_frames_now(self) -> dict[str, Any]:
+        """Check yesterday's frames (fork): what the switched-on checks would flag."""
+        return await check_saved_frames(self.db, business_day() - timedelta(days=1))
+
+    @staticmethod
+    async def frame_check_preview(
+        camera: str, interval: int, year: str, month: str, day: str, name: str
+    ) -> bytes | None:
+        """A small JPEG of a flagged frame, or None when the path names no saved frame."""
+        return await asyncio.to_thread(preview, camera, interval, year, month, day, name)
 
     async def start_rollups_now(self) -> dict[str, Any]:
         """ "Build roll-ups now" (fork): the last full week, month to date and year to date,
