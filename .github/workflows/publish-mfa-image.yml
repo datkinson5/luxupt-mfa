@@ -57,7 +57,7 @@ jobs:
         run: |
           set +e
           docker run --rm --init \
-            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONDONTWRITEBYTECODE=1 -e COLUMNS=250 \
             -v "$PWD":/repo:ro -w /repo \
             luxupt-test:ci \
             python -m pytest -c .github/pytest-ci.ini --rootdir=. -p no:cacheprovider \

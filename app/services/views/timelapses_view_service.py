@@ -46,6 +46,8 @@ ROLLUP_STEP_OPTIONS = [
     {"value": 360, "label": "Every 6 hours"},
     {"value": 1440, "label": "Once a day"},
 ]
+ROLLUP_DEFAULT_STEPS = {RollupKind.WEEKLY: 60, RollupKind.MONTHLY: 1440, RollupKind.YEARLY: 1440}
+ROLLUP_DEFAULT_FPS = {RollupKind.WEEKLY: 24, RollupKind.MONTHLY: 10, RollupKind.YEARLY: 24}
 ROLLUP_DESCRIPTIONS = {
     RollupKind.WEEKLY: "Monday to Sunday, built on Mondays",
     RollupKind.MONTHLY: "The previous month, built on the 1st",
@@ -274,9 +276,13 @@ class TimelapsesViewService:
                     "value": kind.value,
                     "label": kind.label,
                     "description": ROLLUP_DESCRIPTIONS[kind],
-                    "enabled": getattr(settings, f"rollup_{kind.value}_enabled"),
-                    "step_minutes": getattr(settings, f"rollup_{kind.value}_step_minutes"),
-                    "frame_rate": getattr(settings, f"rollup_{kind.value}_frame_rate"),
+                    "enabled": getattr(settings, f"rollup_{kind.value}_enabled", True),
+                    "step_minutes": getattr(
+                        settings, f"rollup_{kind.value}_step_minutes", ROLLUP_DEFAULT_STEPS[kind]
+                    ),
+                    "frame_rate": getattr(
+                        settings, f"rollup_{kind.value}_frame_rate", ROLLUP_DEFAULT_FPS[kind]
+                    ),
                 }
                 for kind in RollupKind
             ],

@@ -51,6 +51,32 @@ def _clean_media() -> Iterator[None]:
 # --- settings -------------------------------------------------------------------------------
 
 
+async def _save_capture_settings(client: AsyncClient, **extra: str) -> object:
+    """POST the Capture Settings form as the panel sends it (every field filled in)."""
+    return await client.post(
+        "/cameras/fetch-settings",
+        data={
+            "enabled": "true",
+            "intervals": [60],
+            "default_capture_method": "auto",
+            "default_rtsp_quality": "high",
+            "max_retries": "3",
+            "retry_delay": "2",
+            "request_timeout": "30",
+            "rate_limit": "10",
+            "rate_limit_buffer": "0.8",
+            "min_offset_seconds": "2",
+            "max_offset_seconds": "15",
+            "camera_refresh_interval": "300",
+            "high_quality_snapshots": "true",
+            "rtsp_output_format": "png",
+            "png_compression_level": "6",
+            "rtsp_capture_timeout": "15",
+            **extra,
+        },
+    )
+
+
 async def test_capture_active_hours_default_to_all_day_and_save(
     auth_client: AsyncClient, db: AsyncSession
 ) -> None:
@@ -60,17 +86,16 @@ async def test_capture_active_hours_default_to_all_day_and_save(
     panel = await auth_client.get("/cameras/fetch-settings")
     assert panel.status_code == 200 and "Capture Active Hours" in panel.text
 
-    resp = await auth_client.post(
-        "/cameras/fetch-settings",
-        data={"capture_active_start": "07:30", "capture_active_end": "17:30"},
+    resp = await _save_capture_settings(
+        auth_client, capture_active_start="07:30", capture_active_end="17:30"
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200 and "Settings saved" in resp.text, resp.text[:300]
     db.expire_all()
     settings = await fetch_settings_crud.get_settings(db)
     assert (settings.capture_active_start, settings.capture_active_end) == (time(7, 30), time(17, 30))
 
     # A save that does not send the fields leaves them alone.
-    await auth_client.post("/cameras/fetch-settings", data={"enabled": "true"})
+    await _save_capture_settings(auth_client)
     db.expire_all()
     settings = await fetch_settings_crud.get_settings(db)
     assert settings.capture_active_start == time(7, 30)
