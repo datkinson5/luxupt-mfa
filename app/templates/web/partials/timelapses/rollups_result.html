@@ -1,0 +1,12 @@
+{# "Build roll-ups now" result (fork) #}
+{% from "macros/alerts.html" import alert_block %}
+
+{% if queued %}
+{% call alert_block(type="success", title=queued ~ " roll-up job" ~ ("s" if queued != 1 else "") ~ " started") %}
+Progress shows in the jobs list; each roll-up appears with the other timelapses when it finishes.
+{% endcall %}
+{% else %}
+{% call alert_block(type="warning", title="Nothing to build") %}
+{{ reason }}
+{% endcall %}
+{% endif %}

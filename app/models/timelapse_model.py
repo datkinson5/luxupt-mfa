@@ -59,6 +59,8 @@ class Timelapse(Base, TimestampMixin):
         String(32), nullable=True
     )  # e.g., "1920x1080"
     thumbnail_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Fork: "weekly" / "monthly" / "yearly" for a roll-up timelapse; null for the rest.
+    rollup_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Status tracking
     status: Mapped[TimelapseStatus] = mapped_column(

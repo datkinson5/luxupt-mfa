@@ -21,8 +21,10 @@ from app.services.core.historical_fetch_core_service import (
     HistoricalFetchCoreService,
     HistoricalJobCanceled,
 )
+from app.services.core.rollup_core import kind_for_job_type, output_name
+from app.services.core.rollup_jobs_core_service import plan_for
 from app.utils import async_fs, ffmpeg
-from app.utils.timezones import display_zone
+from app.utils.timezones import display_zone, to_display
 from app.workers.timelapse_service import EncodingSettings, TimelapseService
 
 logger = logging.getLogger(__name__)
@@ -439,7 +441,33 @@ class JobProcessor:
                     day = date.fromisoformat(date_str)
                     date_obj = datetime.combine(day, time(0, 0), tzinfo=display_zone())
 
-                    if job_obj.job_type == "historical_combined":
+                    rollup_kind = kind_for_job_type(job_obj.job_type)
+                    if rollup_kind is not None:
+                        # Roll-up (fork): a few frames per day across the period, from disk.
+                        start_d, end_d = self._job_period(job_obj, date_obj.date())
+                        success = await timelapse_service.create_rollup_timelapse(
+                            camera,
+                            interval,
+                            plan_for(rollup_kind, scheduler_settings),
+                            start_d,
+                            end_d,
+                            encoding_settings,
+                            job_id=job_id,
+                        )
+                        if success is None:
+                            async with get_db_context() as db:
+                                await job_crud.fail_job(
+                                    db,
+                                    job_id,
+                                    error=(
+                                        "Not enough frames in this period for a roll-up "
+                                        "(needs at least 2; check Keep Source Images and "
+                                        "the timelapse active hours)"
+                                    ),
+                                )
+                                await db.commit()
+                            return
+                    elif job_obj.job_type == "historical_combined":
                         # Multi-day combined assembly — globs across the date range
                         success = (
                             await timelapse_service.create_combined_timelapse_for_range(
@@ -501,6 +529,31 @@ class JobProcessor:
                         extra={"job_id": job_id, "error": str(db_err)},
                     )
 
+    @staticmethod
+    def _job_period(job: Job, fallback: date) -> tuple[date, date]:
+        """A multi-day job's local calendar days (its bounds are stored as UTC instants)."""
+        start = to_display(job.start_at).date() if job.start_at else fallback
+        end = to_display(job.end_at).date() if job.end_at else start
+        return start, end
+
+    async def _replace_rollups(
+        self, camera: str, interval: int, kind: str, start: date, keep: Path
+    ) -> None:
+        """Remove the roll-ups a rebuild replaces: same camera, interval, kind and start."""
+        async with get_db_context() as db:
+            for old in await timelapse_crud.get_rollups(
+                db,
+                camera_safe_name=camera,
+                interval=interval,
+                rollup_kind=kind,
+                timelapse_date=start,
+            ):
+                for path in (old.file_path, old.thumbnail_path):
+                    if path and Path(path) != keep:
+                        await async_fs.path_unlink(Path(path), missing_ok=True)
+                await timelapse_crud.delete(db, id=old.id)
+            await db.commit()
+
     async def _finalize_successful_job(
         self, job_id: str, camera: str, date_obj: datetime, interval: int
     ) -> None:
@@ -514,7 +567,13 @@ class JobProcessor:
         async with get_db_context() as db:
             job = await job_crud.get_by_job_id(db, job_id)
 
-        if (
+        rollup_kind = kind_for_job_type(job.job_type) if job is not None else None
+        if job is not None and rollup_kind is not None:
+            start_d, end_d = self._job_period(job, date_obj.date())
+            year = f"{start_d.year:04d}"
+            month = f"{start_d.month:02d}"
+            output_filename = output_name(camera, interval, rollup_kind, start_d, end_d)
+        elif (
             job is not None
             and job.job_type == "historical_combined"
             and job.start_at
@@ -552,6 +611,8 @@ class JobProcessor:
         async with get_db_context() as db:
             scheduler_settings = await scheduler_settings_crud.get_settings(db)
             frame_rate = scheduler_settings.frame_rate
+            if rollup_kind is not None:
+                frame_rate = plan_for(rollup_kind, scheduler_settings).frame_rate
             probe_timeout = (
                 scheduler_settings.ffmpeg_timeout
             )  # Use main timeout for probe too
@@ -605,6 +666,11 @@ class JobProcessor:
                 output_path, duration_seconds, probe_timeout
             )
 
+        if rollup_kind is not None and output_exists:
+            await self._replace_rollups(
+                camera, interval, rollup_kind.value, date_obj.date(), output_path
+            )
+
         # Save to database
         async with get_db_context() as db:
             # Get job to retrieve camera_id
@@ -631,8 +697,11 @@ class JobProcessor:
                         if job is not None
                         and job.job_type == "historical_combined"
                         and job.end_at
+                        else self._job_period(job, date_obj.date())[1]
+                        if job is not None and rollup_kind is not None
                         else None
                     ),
+                    "rollup_kind": rollup_kind.value if rollup_kind is not None else None,
                     "interval": interval,
                     "frame_count": frame_count,
                     "frame_rate": frame_rate,

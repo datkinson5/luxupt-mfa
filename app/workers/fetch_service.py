@@ -5,6 +5,7 @@ import logging
 import time
 from collections import defaultdict
 from datetime import UTC, datetime
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from app.db.database import get_db_context, init_db
 from app.models.enum_model import ActivityType, CaptureMethod, CaptureStatus
 from app.schemas.capture_schema import CaptureCreate
 from app.services.core.image_core_service import image_service
+from app.utils.time_windows import in_window, window_label
 from app.utils.timezones import business_day, to_display
 
 # Module logger
@@ -60,6 +62,8 @@ class FetchService:
         self.interval_tasks: dict[int, asyncio.Task[None]] = {}  # interval -> task
         self.running = False
         self.intervals: list[int] = []  # Global intervals from DB
+        # Capture active hours (fork); all day until the settings are read.
+        self._capture_window: tuple[dt_time, dt_time] = (dt_time(0, 0), dt_time(0, 0))
 
         # Track current API settings to detect changes
         self._current_base_url: str = ""
@@ -610,6 +614,22 @@ class FetchService:
                     "Error monitoring settings changes", extra={"error": str(e)}
                 )
 
+    async def _refresh_capture_window(self) -> None:
+        """Re-read the capture active hours (fork); keeps the last value if the read fails."""
+        try:
+            async with get_db_context() as session:
+                settings = await fetch_settings_crud.get_settings(session)
+                window = (settings.capture_active_start, settings.capture_active_end)
+        except Exception as e:
+            logger.warning("Failed to read capture active hours", extra={"error": str(e)})
+            return
+        if window != self._capture_window:
+            logger.info(
+                "Capture active hours",
+                extra={"active_hours": window_label(*window)},
+            )
+            self._capture_window = window
+
     async def _check_fetch_enabled(self) -> bool:
         """Check if fetch is globally enabled in database settings."""
         try:
@@ -668,6 +688,7 @@ class FetchService:
                     )
                     await asyncio.sleep(config.SETTINGS_RELOAD_INTERVAL)
                     continue
+                await self._refresh_capture_window()
 
             # Snap to the current epoch-aligned timestamp using integer division
             # This is robust against asyncio.sleep overshoot — no exact-second polling needed
@@ -725,6 +746,16 @@ class FetchService:
                         # loop -- but a discarded error is a failure that never happened as
                         # far as anyone can tell, so it is logged rather than swallowed.
                         logger.exception("Failed to log capture activity")
+                elif not in_window(capture_time.time(), *self._capture_window):
+                    # Outside the capture active hours (fork): no capture this tick.
+                    logger.debug(
+                        "Outside capture active hours, skipping",
+                        extra={
+                            "interval": interval,
+                            "time": capture_time.strftime("%H:%M:%S"),
+                            "active_hours": window_label(*self._capture_window),
+                        },
+                    )
                 else:
                     # Get cameras from API (uses internal caching)
                     api_cameras = await self.camera_manager.get_cameras()

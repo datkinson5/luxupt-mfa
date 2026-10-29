@@ -17,6 +17,8 @@ from app.schemas.pagination_schema import build_pagination
 from app.services.core.camera_core_service import CameraCoreService
 from app.services.core.capture_core_service import CaptureCoreService
 from app.services.core.job_core_service import JobCoreService, get_job_processor
+from app.services.core.rollup_core import RollupKind, latest_period
+from app.services.core.rollup_jobs_core_service import create_rollup_jobs
 from app.services.core.settings_core_service import SettingsCoreService
 from app.services.core.timelapse_browser_core_service import TimelapseBrowserCoreService
 from app.services.views._camera_options import (
@@ -28,10 +30,27 @@ from app.services.views._camera_options import (
     build_timelapse_cards,
     job_card_urls,
 )
+from app.utils.time_windows import parse_time_field
 from app.utils.timezones import business_day, display_zone, to_display
 
 logger = logging.getLogger(__name__)
 
+
+
+# Fork: roll-up frame spacing choices (minutes; 1440 = once a day, nearest the target time).
+ROLLUP_STEP_OPTIONS = [
+    {"value": 15, "label": "Every 15 minutes"},
+    {"value": 30, "label": "Every 30 minutes"},
+    {"value": 60, "label": "Every hour"},
+    {"value": 180, "label": "Every 3 hours"},
+    {"value": 360, "label": "Every 6 hours"},
+    {"value": 1440, "label": "Once a day"},
+]
+ROLLUP_DESCRIPTIONS = {
+    RollupKind.WEEKLY: "Monday to Sunday, built on Mondays",
+    RollupKind.MONTHLY: "The previous month, built on the 1st",
+    RollupKind.YEARLY: "1 January to date, rebuilt on the 1st",
+}
 
 class TimelapsesViewService:
     """Prepares data for timelapse pages."""
@@ -249,6 +268,18 @@ class TimelapsesViewService:
             "source_selected": source_selected,
             "pixel_format_options": PIXEL_FORMAT_OPTIONS,
             "preset_options": PRESET_OPTIONS,
+            "rollup_step_options": ROLLUP_STEP_OPTIONS,
+            "rollup_kinds": [
+                {
+                    "value": kind.value,
+                    "label": kind.label,
+                    "description": ROLLUP_DESCRIPTIONS[kind],
+                    "enabled": getattr(settings, f"rollup_{kind.value}_enabled"),
+                    "step_minutes": getattr(settings, f"rollup_{kind.value}_step_minutes"),
+                    "frame_rate": getattr(settings, f"rollup_{kind.value}_frame_rate"),
+                }
+                for kind in RollupKind
+            ],
         }
 
     async def update_scheduler_settings(self, update_data: dict[str, Any]) -> None:
@@ -272,6 +303,7 @@ class TimelapsesViewService:
         preset: str | None,
         pixel_format: str | None,
         ffmpeg_timeout: int | None,
+        extras: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build the scheduler payload from raw form values and save.
 
@@ -320,11 +352,58 @@ class TimelapsesViewService:
             {k: v for k, v in optional_encoding.items() if v is not None and v != ""}
         )
 
+        update_data.update(self._fork_scheduler_fields(extras or {}))
+
         await self.update_scheduler_settings(update_data)
         return {
             "success": True,
             "enabled": is_enabled,
             "run_time": update_data["run_time"],
+        }
+
+    @staticmethod
+    def _fork_scheduler_fields(form: dict[str, Any]) -> dict[str, Any]:
+        """Active hours and roll-up settings from the form (fork). A field the form did not
+        send keeps its saved value; the roll-up toggles are read only from the full panel
+        (which sends rollups_form), since an unticked checkbox is simply absent."""
+        data: dict[str, Any] = {}
+        for name, default in (
+            ("timelapse_active_start", time(0, 0)),
+            ("timelapse_active_end", time(0, 0)),
+            ("rollup_target_time", time(12, 0)),
+        ):
+            if form.get(name) is not None:
+                data[name] = parse_time_field(form[name], default)
+        valid_steps = {opt["value"] for opt in ROLLUP_STEP_OPTIONS}
+        for kind in RollupKind:
+            step = form.get(f"rollup_{kind.value}_step_minutes")
+            if step is not None and int(step) in valid_steps:
+                data[f"rollup_{kind.value}_step_minutes"] = int(step)
+            fps = form.get(f"rollup_{kind.value}_frame_rate")
+            if fps not in (None, ""):
+                data[f"rollup_{kind.value}_frame_rate"] = max(1, min(60, int(fps)))
+            if form.get("rollups_form"):
+                data[f"rollup_{kind.value}_enabled"] = (
+                    form.get(f"rollup_{kind.value}_enabled") is not None
+                )
+        return data
+
+    async def start_rollups_now(self) -> dict[str, Any]:
+        """ "Build roll-ups now" (fork): the last full week, month to date and year to date,
+        for each enabled kind, camera and interval. Jobs start after this request commits."""
+        settings = await self.settings_service.get_scheduler_settings()
+        if not settings.keep_images:
+            return {
+                "queued": 0,
+                "reason": "Keep Source Images is off, so there are no saved frames to build from.",
+            }
+        today = business_day()
+        queued = await create_rollup_jobs(self.db, lambda kind: latest_period(kind, today))
+        for job in queued:
+            self._schedule_kickoff(job.job_id, job.date_str, job.camera_safe_name, job.interval)
+        return {
+            "queued": len(queued),
+            "reason": "No roll-ups are switched on, or no active cameras.",
         }
 
     async def get_lightbox_context(self, timelapse_id: int) -> dict[str, Any]:

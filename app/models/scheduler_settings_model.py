@@ -80,5 +80,51 @@ class SchedulerSettings(Base, TimestampMixin):
     # FFmpeg timeout in seconds (default: 4 hours)
     ffmpeg_timeout: Mapped[int] = mapped_column(Integer, default=14400, nullable=False)
 
+    # ===========================================
+    # Fork: active hours and roll-ups
+    # ===========================================
+
+    # Timelapse active hours: only frames between these wall-clock times go into timelapses
+    # (daily, recordings-based and roll-ups). Equal times (the default) mean all day.
+    timelapse_active_start: Mapped[time] = mapped_column(
+        Time, default=time(0, 0), nullable=False
+    )
+    timelapse_active_end: Mapped[time] = mapped_column(
+        Time, default=time(0, 0), nullable=False
+    )
+
+    # Roll-ups (see app/services/core/rollup_core.py). step_minutes: one frame per N
+    # minutes of each day; 1440 = once a day, the frame nearest rollup_target_time.
+    rollup_weekly_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    rollup_weekly_step_minutes: Mapped[int] = mapped_column(
+        Integer, default=60, nullable=False
+    )
+    rollup_weekly_frame_rate: Mapped[int] = mapped_column(
+        Integer, default=24, nullable=False
+    )
+    rollup_monthly_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    rollup_monthly_step_minutes: Mapped[int] = mapped_column(
+        Integer, default=1440, nullable=False
+    )
+    rollup_monthly_frame_rate: Mapped[int] = mapped_column(
+        Integer, default=10, nullable=False
+    )
+    rollup_yearly_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    rollup_yearly_step_minutes: Mapped[int] = mapped_column(
+        Integer, default=1440, nullable=False
+    )
+    rollup_yearly_frame_rate: Mapped[int] = mapped_column(
+        Integer, default=24, nullable=False
+    )
+    rollup_target_time: Mapped[time] = mapped_column(
+        Time, default=time(12, 0), nullable=False
+    )
+
     def __repr__(self) -> str:
         return f"<SchedulerSettings(enabled={self.enabled}, run_time={self.run_time})>"

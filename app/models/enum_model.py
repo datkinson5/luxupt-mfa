@@ -57,6 +57,10 @@ class JobType(StrEnum):
     LIVE_DAILY = "live_daily"
     HISTORICAL = "historical"
     HISTORICAL_COMBINED = "historical_combined"
+    # Fork: roll-ups (app/services/core/rollup_core.py), built from frames on disk.
+    ROLLUP_WEEKLY = "rollup_weekly"
+    ROLLUP_MONTHLY = "rollup_monthly"
+    ROLLUP_YEARLY = "rollup_yearly"
 
 
 class ScheduleSource(StrEnum):

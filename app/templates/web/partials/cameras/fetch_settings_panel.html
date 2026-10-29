@@ -190,6 +190,14 @@
                 </div>
                 {% endcall %}
 
+                <!-- ===== CAPTURE ACTIVE HOURS (fork) ===== -->
+                {% call section_card('Capture Active Hours', 'Live capture only between these times each day (UK time). Same start and end = all day.') %}
+                <div class="grid grid-cols-2 gap-4">
+                    {{ text_input("capture_active_start", label="From", type="time", value=settings.capture_active_start|time('24h')) }}
+                    {{ text_input("capture_active_end", label="Until", type="time", value=settings.capture_active_end|time('24h'), help="An earlier time than From wraps past midnight") }}
+                </div>
+                {% endcall %}
+
                 <!-- ===== CAMERA DISTRIBUTION SECTION ===== -->
                 {% call section_card('Camera Distribution', 'Stagger camera captures to reduce API load') %}
                 <div class="grid grid-cols-2 gap-4">

@@ -5,7 +5,7 @@ import logging
 import os
 import signal
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
 from pathlib import Path
@@ -27,7 +27,14 @@ from app.db import maintenance as db_maintenance
 from app.db.database import get_db_context
 from app.models.enum_model import ScheduleSource
 from app.services.core.capture_cleanup_core_service import CaptureCleanupCoreService
+from app.services.core.rollup_core import (
+    RollupPlan,
+    frame_moment,
+    output_name,
+    select_frames,
+)
 from app.utils import async_fs, ffmpeg
+from app.utils.time_windows import in_window, is_all_day, window_label
 from app.utils.timezones import display_zone, to_display
 
 # Module logger
@@ -423,6 +430,14 @@ class TimelapseService:
                                 encoding_settings=encoding_settings,
                             )
 
+                            # Roll-ups (fork): after the daily builds, so the last day's
+                            # frames are in. Only the kinds due today run.
+                            await self._create_scheduled_rollups(
+                                today,
+                                enabled_cameras=enabled_cameras,
+                                enabled_intervals=enabled_intervals,
+                            )
+
                             # Update last_run_at timestamp
                             await scheduler_settings_crud.update_last_run(db)
                             await db.commit()
@@ -469,6 +484,49 @@ class TimelapseService:
 
             # Sleep for 60 seconds before checking again
             await asyncio.sleep(60)
+
+    async def _create_scheduled_rollups(
+        self,
+        run_day: date,
+        *,
+        enabled_cameras: list[str] | None,
+        enabled_intervals: list[int] | None,
+    ) -> None:
+        """Queue and build the roll-ups due on ``run_day`` (weekly on Mondays, monthly and
+        year-to-date on the 1st)."""
+        from app.services.core.job_core_service import (  # noqa: PLC0415
+            get_job_processor,
+        )
+        from app.services.core.rollup_core import scheduled_period  # noqa: PLC0415
+        from app.services.core.rollup_jobs_core_service import (  # noqa: PLC0415
+            create_rollup_jobs,
+        )
+
+        try:
+            async with get_db_context() as db:
+                queued = await create_rollup_jobs(
+                    db,
+                    lambda kind: scheduled_period(kind, run_day),
+                    only_cameras=enabled_cameras,
+                    only_intervals=enabled_intervals,
+                )
+                await db.commit()
+        except Exception:
+            logger.exception("Could not queue roll-ups")
+            return
+        if not queued:
+            return
+        processor = get_job_processor()
+        results = await asyncio.gather(
+            *(
+                processor._process_job(q.job_id, q.date_str, q.camera_safe_name, q.interval)
+                for q in queued
+            ),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error("Roll-up failed", extra={"error": str(result)})
 
     async def _create_timelapses_for_date(
         self,
@@ -668,6 +726,12 @@ class TimelapseService:
         zone = display_zone()
         start_at = datetime.combine(day, dt_time(0, 0), tzinfo=zone).astimezone(UTC)
         end_at = datetime.combine(day, dt_time(23, 59), tzinfo=zone).astimezone(UTC)
+        # Timelapse active hours (fork): fetch only the frames the timelapse will use, which
+        # also spares the NVR. All day keeps the whole-day window.
+        window = await self._timelapse_window()
+        window_start, window_end = (
+            (dt_time(0, 0), dt_time(23, 59)) if is_all_day(*window) else window
+        )
 
         async with get_db_context() as db:
             existing = await job_crud.get_job_for_camera_date(
@@ -691,8 +755,8 @@ class TimelapseService:
                 job_type="historical",
                 start_at=start_at,
                 end_at=end_at,
-                daily_window_start=dt_time(0, 0),
-                daily_window_end=dt_time(23, 59),
+                daily_window_start=window_start,
+                daily_window_end=window_end,
             )
             await db.commit()
             job_id = job.job_id
@@ -708,6 +772,34 @@ class TimelapseService:
             elif result_job and result_job.status == "failed":
                 return False
             return None
+
+    @staticmethod
+    async def _timelapse_window() -> tuple[dt_time, dt_time]:
+        """The timelapse active hours (fork); equal times mean all day."""
+        async with get_db_context() as db:
+            settings = await scheduler_settings_crud.get_settings(db)
+            return settings.timelapse_active_start, settings.timelapse_active_end
+
+    @staticmethod
+    def _within_window(
+        files: list[Path], window: tuple[dt_time, dt_time]
+    ) -> list[Path]:
+        """Frames captured inside the active hours, in time order (names embed the time)."""
+        zone = display_zone()
+        kept = []
+        for path in files:
+            moment = frame_moment(path, zone)
+            if moment is not None and in_window(moment.time(), *window):
+                kept.append(path)
+        return sorted(kept, key=lambda p: p.name)
+
+    @staticmethod
+    def _find_all_image_files(images_path: Path, camera_safe_name: str) -> dict[str, list[Path]]:
+        """Every frame in a day directory, by format."""
+        return {
+            fmt: list(images_path.glob(f"{camera_safe_name}_*.{fmt}"))
+            for fmt in ("png", "jpg")
+        }
 
     def _find_image_files(
         self, images_path: Path, camera_safe_name: str
@@ -777,6 +869,25 @@ class TimelapseService:
                 },
             )
             return None
+
+        # Timelapse active hours (fork): only frames inside the window. All day (the
+        # default) leaves the glob input exactly as it was.
+        window = await self._timelapse_window()
+        frame_files: list[Path] | None = None
+        if not is_all_day(*window):
+            frame_files = self._within_window(image_files, window)
+            if not frame_files:
+                logger.info(
+                    "No frames inside the timelapse active hours",
+                    extra={
+                        "camera": camera_safe_name,
+                        "interval": interval,
+                        "date": target_date.strftime("%Y-%m-%d"),
+                        "active_hours": window_label(*window),
+                    },
+                )
+                return None
+            image_files = frame_files
 
         logger.info(
             "Creating timelapse",
@@ -852,6 +963,7 @@ class TimelapseService:
             encoding_settings,
             image_format,
             job_id=job_id,
+            frame_files=frame_files,
         )
 
         if success and not keep_images:
@@ -1197,6 +1309,17 @@ class TimelapseService:
         # Sort by filename (embeds unix timestamp → chronological)
         all_frames.sort(key=lambda p: p.name)
 
+        # Timelapse active hours (fork)
+        window = await self._timelapse_window()
+        if not is_all_day(*window):
+            all_frames = self._within_window(all_frames, window)
+            if not all_frames:
+                logger.info(
+                    "Combined timelapse: no frames inside the timelapse active hours",
+                    extra={"camera": camera_safe_name, "interval": interval},
+                )
+                return None
+
         year = start_date.strftime("%Y")
         month = start_date.strftime("%m")
         videos_path = (
@@ -1238,6 +1361,104 @@ class TimelapseService:
             image_format=image_format,
             job_id=job_id,
             frame_files=all_frames,
+        )
+
+    async def create_rollup_timelapse(
+        self,
+        camera_safe_name: str,
+        interval: int,
+        plan: RollupPlan,
+        start_date: date,
+        end_date: date,
+        encoding_settings: EncodingSettings,
+        job_id: str | None = None,
+    ) -> bool | None:
+        """Build a roll-up (fork): a few frames per day across the period, from frames on disk.
+
+        Returns None when the period has fewer than two usable frames. The output name is
+        fixed per camera, interval, kind and period, so a rebuild overwrites it.
+        """
+        by_format: dict[str, list[Path]] = {"png": [], "jpg": []}
+        cur = start_date
+        while cur <= end_date:
+            day_dir = (
+                config.IMAGE_OUTPUT_PATH
+                / camera_safe_name
+                / f"{interval}s"
+                / cur.strftime("%Y")
+                / cur.strftime("%m")
+                / cur.strftime("%d")
+            )
+            if await async_fs.path_exists(day_dir):
+                found = await asyncio.to_thread(
+                    self._find_all_image_files, day_dir, camera_safe_name
+                )
+                for fmt, files in found.items():
+                    by_format[fmt].extend(files)
+            cur += timedelta(days=1)
+
+        # One format per video: the concat demuxer needs every input to decode the same way.
+        image_format = max(by_format, key=lambda fmt: len(by_format[fmt]))
+        if by_format["png"] and by_format["jpg"]:
+            logger.warning(
+                "Roll-up: frames in two formats; using the more common one",
+                extra={
+                    "camera": camera_safe_name,
+                    "png": len(by_format["png"]),
+                    "jpg": len(by_format["jpg"]),
+                    "using": image_format,
+                },
+            )
+        frames = select_frames(
+            by_format[image_format], display_zone(), start_date, end_date, plan
+        )
+        if len(frames) < 2:
+            logger.info(
+                "Roll-up: not enough frames in the period",
+                extra={
+                    "camera": camera_safe_name,
+                    "interval": interval,
+                    "kind": plan.kind.value,
+                    "start": start_date.isoformat(),
+                    "end": end_date.isoformat(),
+                    "frames": len(frames),
+                },
+            )
+            return None
+
+        videos_path = (
+            config.VIDEO_OUTPUT_PATH
+            / start_date.strftime("%Y")
+            / start_date.strftime("%m")
+            / camera_safe_name
+            / f"{interval}s"
+        )
+        await async_fs.path_mkdir(videos_path, parents=True, exist_ok=True)
+        output_path = videos_path / output_name(
+            camera_safe_name, interval, plan.kind, start_date, end_date
+        )
+        await async_fs.path_unlink(output_path, missing_ok=True)
+
+        logger.info(
+            "Encoding roll-up",
+            extra={
+                "camera": camera_safe_name,
+                "interval": interval,
+                "kind": plan.kind.value,
+                "frames": len(frames),
+                "start": start_date.isoformat(),
+                "end": end_date.isoformat(),
+            },
+        )
+        return await self._create_video(
+            images_path=videos_path,  # unused with frame_files
+            output_path=output_path,
+            camera_safe_name=camera_safe_name,
+            interval=interval,
+            encoding_settings=replace(encoding_settings, frame_rate=plan.frame_rate),
+            image_format=image_format,
+            job_id=job_id,
+            frame_files=frames,
         )
 
     async def _update_progress(

@@ -2,7 +2,7 @@
 {% from "macros/panels.html" import panel_backdrop, panel_header, panel_footer, panel_drawer %}
 {% from "macros/icons.html" import icon %}
 {% from "macros/cards.html" import section_card %}
-{% from "macros/buttons.html" import primary, ghost %}
+{% from "macros/buttons.html" import primary, ghost, secondary %}
 {% from "macros/forms.html" import select, filter_select, text_input, toggle_row, radio_card, checkbox %}
 
 {{ panel_backdrop() }}
@@ -66,6 +66,40 @@
                         <span>Last run: {{ settings.last_run_at | format_datetime('log') }}</span>
                     </div>
                     {% endif %}
+                </div>
+                {% endcall %}
+
+                <!-- ===== TIMELAPSE ACTIVE HOURS (fork) ===== -->
+                {% call section_card('Timelapse Active Hours') %}
+                <div class="space-y-3">
+                    <p class="text-xs text-surface-200">Only frames between these times (UK time) go into timelapses: daily, Protect recordings and roll-ups. With Protect recordings, only these hours are fetched. Same start and end = all day.</p>
+                    <div class="grid grid-cols-2 gap-4">
+                        {{ text_input("timelapse_active_start", label="From", type="time", value=settings.timelapse_active_start|time('24h')) }}
+                        {{ text_input("timelapse_active_end", label="Until", type="time", value=settings.timelapse_active_end|time('24h'), help="An earlier time than From wraps past midnight") }}
+                    </div>
+                </div>
+                {% endcall %}
+
+                <!-- ===== ROLL-UPS (fork) ===== -->
+                {% call section_card('Roll-ups') %}
+                <div class="space-y-4">
+                    <input type="hidden" name="rollups_form" value="1">
+                    <p class="text-xs text-surface-200">Longer timelapses built after the nightly run from frames already saved: weekly on Mondays, monthly on the 1st, and year to date rebuilt on the 1st. They need <span class="text-white">Keep Source Images</span> on.</p>
+                    {% for kind in rollup_kinds %}
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end {{ 'border-t border-surface-400/20 pt-4' if not loop.first }}">
+                        {{ toggle_row("rollup_" ~ kind.value ~ "_enabled", kind.label, description=kind.description, checked=kind.enabled) }}
+                        {{ select("rollup_" ~ kind.value ~ "_step_minutes", rollup_step_options, label="Frames", selected=kind.step_minutes, placeholder=none) }}
+                        {{ text_input("rollup_" ~ kind.value ~ "_frame_rate", label="Playback", type="number", value=kind.frame_rate, align="center", suffix="fps", extra_attrs='min="1" max="60"') }}
+                    </div>
+                    {% endfor %}
+                    <div class="border-t border-surface-400/20 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+                        {{ text_input("rollup_target_time", label="Once-a-day frame nearest", type="time", value=settings.rollup_target_time|time('24h'), help="Used by Once a day: keeps the light steady from day to day") }}
+                        <div class="flex flex-col items-start gap-2">
+                            {{ secondary("Build roll-ups now", icon_name="film", hx_attrs={"hx-post": "/timelapses/scheduler/rollups/run", "hx-target": "#rollups-result", "hx-swap": "innerHTML"}) }}
+                            <span class="text-xs text-surface-300">Last full week, month to date and year to date, from saved settings.</span>
+                        </div>
+                    </div>
+                    <div id="rollups-result"></div>
                 </div>
                 {% endcall %}
 

@@ -27,7 +27,7 @@
                 <div class="text-center text-white">
                     <p class="text-lg font-medium">{{ timelapse.camera_safe_name|replace('_', ' ') }}</p>
                     <p class="text-sm text-white/70">
-                        {{ timelapse.timelapse_date | date }}{% if timelapse.end_date and timelapse.end_date != timelapse.timelapse_date %} → {{ timelapse.end_date | date }}{% endif %}
+                        {{ timelapse.timelapse_date | date }}{% if timelapse.end_date and timelapse.end_date != timelapse.timelapse_date %} → {{ timelapse.end_date | date }}{% endif %}{% if timelapse.rollup_kind is defined and timelapse.rollup_kind %} <span class="ml-1 rounded bg-primary-500/15 px-1.5 py-0.5 text-xs font-medium text-primary-300">{{ {"weekly": "Weekly", "monthly": "Monthly", "yearly": "Year to date"}.get(timelapse.rollup_kind, timelapse.rollup_kind) }}</span>{% endif %}
                         - {{ timelapse.interval }}s interval
                     </p>
                     <div class="flex items-center justify-center gap-4 mt-2 text-xs text-white/50">

@@ -80,15 +80,42 @@ class CRUDTimelapse(CRUDBase[Timelapse, TimelapseCreate, TimelapseUpdate]):
         timelapse_date: date,
         interval: int,
     ) -> Timelapse | None:
-        """Get a specific timelapse by camera, date, and interval."""
+        """Get the single-day timelapse for a camera, date, and interval.
+
+        Multi-day timelapses (historical ranges, roll-ups) carry an end_date and share their
+        start date with that day's own timelapse, so they are excluded: matching them made
+        this raise MultipleResultsFound, or treat a weekly roll-up as the day's timelapse.
+        """
         result = await db.execute(
             select(Timelapse).where(
                 Timelapse.camera_id == camera_id,
                 Timelapse.timelapse_date == timelapse_date,
                 Timelapse.interval == interval,
+                Timelapse.end_date.is_(None),
+                Timelapse.rollup_kind.is_(None),
             )
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
+
+    async def get_rollups(
+        self,
+        db: AsyncSession,
+        *,
+        camera_safe_name: str,
+        interval: int,
+        rollup_kind: str,
+        timelapse_date: date,
+    ) -> list[Timelapse]:
+        """Roll-ups of one kind starting on one date (fork): a rebuild replaces these."""
+        result = await db.execute(
+            select(Timelapse).where(
+                Timelapse.camera_safe_name == camera_safe_name,
+                Timelapse.interval == interval,
+                Timelapse.rollup_kind == rollup_kind,
+                Timelapse.timelapse_date == timelapse_date,
+            )
+        )
+        return list(result.scalars().all())
 
     async def get_latest_by_camera(
         self,

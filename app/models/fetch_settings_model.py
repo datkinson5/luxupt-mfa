@@ -1,6 +1,8 @@
 """FetchSettings SQLAlchemy model for global fetch/capture configuration."""
 
-from sqlalchemy import Boolean, Float, Integer, String
+from datetime import time
+
+from sqlalchemy import Boolean, Float, Integer, String, Time
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -116,6 +118,16 @@ class FetchSettings(Base, TimestampMixin):
     # How often to check for new cameras in seconds
     camera_refresh_interval: Mapped[int] = mapped_column(
         Integer, default=300, nullable=False
+    )
+
+    # Capture active hours (fork): live capture only between these wall-clock times, in the
+    # display zone. Equal times (the default) mean all day; an end before the start wraps
+    # past midnight.
+    capture_active_start: Mapped[time] = mapped_column(
+        Time, default=time(0, 0), nullable=False
+    )
+    capture_active_end: Mapped[time] = mapped_column(
+        Time, default=time(0, 0), nullable=False
     )
 
     def __repr__(self) -> str:

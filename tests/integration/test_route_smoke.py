@@ -444,6 +444,12 @@ class TestDeletes:
             "DELETE /cameras/{camera_id}",
         )
 
+    async def test_build_rollups_now(self, auth_client: AsyncClient) -> None:
+        _ran(
+            await auth_client.post("/timelapses/scheduler/rollups/run"),
+            "POST /timelapses/scheduler/rollups/run",
+        )
+
     async def test_clear_failures(self, auth_client: AsyncClient) -> None:
         _ran(
             await auth_client.post("/cameras/failures/clear"),

@@ -58,6 +58,14 @@ async def save_scheduler_settings(
     user: str = Depends(get_current_user),
 ) -> Response:
     """Save scheduler settings (HTMX)."""
+    # Fork: active hours and roll-up fields, read straight from the form so an older form
+    # that does not send them leaves them unchanged.
+    form = await request.form()
+    extras = {
+        key: value
+        for key, value in form.items()
+        if key.startswith(("timelapse_active_", "rollup_")) and isinstance(value, str)
+    }
     context = await view_service.save_scheduler_settings(
         enabled=enabled,
         run_time=run_time,
@@ -73,10 +81,25 @@ async def save_scheduler_settings(
         preset=preset,
         pixel_format=pixel_format,
         ffmpeg_timeout=ffmpeg_timeout,
+        extras=extras,
     )
 
     return templates.TemplateResponse(
         request,
         "partials/timelapses/scheduler_result.html",
         {**context},
+    )
+
+
+@router.post("/scheduler/rollups/run", response_class=HTMLResponse)
+async def run_rollups_now(
+    request: Request,
+    templates: TemplatesDep,
+    view_service: TimelapsesViewDep,
+    user: str = Depends(get_current_user),
+) -> Response:
+    """Build roll-ups now (fork): queue the latest period of each enabled kind."""
+    context = await view_service.start_rollups_now()
+    return templates.TemplateResponse(
+        request, "partials/timelapses/rollups_result.html", context
     )

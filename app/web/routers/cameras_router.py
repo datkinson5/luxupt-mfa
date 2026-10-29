@@ -119,6 +119,9 @@ async def save_fetch_settings(
     rtsp_output_format: Annotated[str | None, Form()] = None,
     png_compression_level: Annotated[int | None, Form()] = None,
     rtsp_capture_timeout: Annotated[int | None, Form()] = None,
+    # Capture active hours (fork), HH:MM
+    capture_active_start: Annotated[str | None, Form()] = None,
+    capture_active_end: Annotated[str | None, Form()] = None,
     # Disabled cameras to re-enable
     reactivate_cameras: Annotated[list[str] | None, Form()] = None,
     user: str = Depends(get_current_user),
@@ -151,6 +154,8 @@ async def save_fetch_settings(
         rtsp_output_format=rtsp_output_format,
         png_compression_level=png_compression_level,
         rtsp_capture_timeout=rtsp_capture_timeout,
+        capture_active_start=capture_active_start,
+        capture_active_end=capture_active_end,
         reactivate_cameras=reactivate_cameras,
     )
 

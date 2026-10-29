@@ -429,7 +429,7 @@
                 <h4 class="font-medium text-white truncate">{{ timelapse.camera_safe_name|replace('_', ' ') }}</h4>
                 <p class="text-sm text-surface-200">
                     {{ timelapse.timelapse_date | date }}{% if timelapse.end_date and timelapse.end_date != timelapse.timelapse_date %} → {{ timelapse.end_date | date }}{% endif %}
-                    · {{ timelapse.interval }}s
+                    · {{ timelapse.interval }}s{% if timelapse.rollup_kind is defined and timelapse.rollup_kind %} <span class="ml-1 rounded bg-primary-500/15 px-1.5 py-0.5 text-xs font-medium text-primary-300">{{ {"weekly": "Weekly", "monthly": "Monthly", "yearly": "Year to date"}.get(timelapse.rollup_kind, timelapse.rollup_kind) }}</span>{% endif %}
                 </p>
             </div>
             <div class="flex items-center gap-2">

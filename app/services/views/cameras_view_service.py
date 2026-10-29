@@ -3,6 +3,7 @@
 import logging
 import time
 from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
@@ -24,6 +25,7 @@ from app.services.views._camera_options import (
     build_camera_card_urls,
     build_camera_options,
 )
+from app.utils.time_windows import parse_time_field
 from app.workers.fetch_service import FetchService
 
 logger = logging.getLogger(__name__)
@@ -395,6 +397,8 @@ class CamerasViewService:
         png_compression_level: int | None,
         rtsp_capture_timeout: int | None,
         reactivate_cameras: list[str] | None,
+        capture_active_start: str | None = None,
+        capture_active_end: str | None = None,
     ) -> tuple[bool, str, int | None, bool]:
         """Build the settings payload from raw form values, save, and re-enable toggled cameras.
 
@@ -458,6 +462,16 @@ class CamerasViewService:
         update_data["rtsp_capture_timeout"] = (
             rtsp_capture_timeout if rtsp_capture_timeout else None
         )
+
+        # Capture active hours (fork): a field left out of the form keeps its value.
+        if capture_active_start is not None:
+            update_data["capture_active_start"] = parse_time_field(
+                capture_active_start, dt_time(0, 0)
+            )
+        if capture_active_end is not None:
+            update_data["capture_active_end"] = parse_time_field(
+                capture_active_end, dt_time(0, 0)
+            )
 
         success, message, cameras_synced = await self.update_fetch_settings(update_data)
 
