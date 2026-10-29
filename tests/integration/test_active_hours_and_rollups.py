@@ -17,7 +17,7 @@ import pytest
 from httpx import AsyncClient
 from PIL import Image
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core import config
 from app.crud import job_crud, timelapse_crud
@@ -173,6 +173,12 @@ async def test_reader_cannot_build_rollups(client: AsyncClient, db: AsyncSession
 
 
 # --- roll-ups end to end --------------------------------------------------------------------
+# These run a whole job (encode, progress updates, finalise), which opens several sessions at
+# once, so they use durable_db: real commits and a connection per session, as in production.
+# The savepoint-sharing `db` fixture puts every session on ONE connection, where a progress
+# write and the job's own write can interleave and break each other's transaction.
+
+Maker = async_sessionmaker[AsyncSession]
 
 
 def _write_frames(days: list[date], every_minutes: int) -> int:
@@ -192,53 +198,59 @@ def _write_frames(days: list[date], every_minutes: int) -> int:
     return written
 
 
-async def _camera(db: AsyncSession) -> None:
-    db.add(
-        Camera(
-            camera_id="rollup-cam-uuid",
-            name="Rollup Cam",
-            safe_name=CAMERA,
-            is_active=True,
-            is_connected=True,
-            capture_method=CaptureMethod.AUTO,
-            rtsp_quality="high",
-            enabled_intervals=[60],
-            first_discovered_at=datetime.now(UTC),
+async def _camera(maker: Maker) -> None:
+    async with maker() as s:
+        s.add(
+            Camera(
+                camera_id="rollup-cam-uuid",
+                name="Rollup Cam",
+                safe_name=CAMERA,
+                is_active=True,
+                is_connected=True,
+                capture_method=CaptureMethod.AUTO,
+                rtsp_quality="high",
+                enabled_intervals=[60],
+                first_discovered_at=datetime.now(UTC),
+            )
         )
-    )
-    await db.commit()
+        await s.commit()
 
 
-async def _build(db: AsyncSession, period: tuple[date, date]) -> str:
-    queued = await create_rollup_jobs(
-        db,
-        lambda kind: period if kind is RollupKind.WEEKLY else None,
-        only_cameras=[CAMERA],
-        only_intervals=[60],
-    )
-    await db.commit()
+async def _build(maker: Maker, period: tuple[date, date]) -> str:
+    async with maker() as s:
+        queued = await create_rollup_jobs(
+            s,
+            lambda kind: period if kind is RollupKind.WEEKLY else None,
+            only_cameras=[CAMERA],
+            only_intervals=[60],
+        )
+        await s.commit()
     assert len(queued) == 1
     q = queued[0]
     await get_job_processor()._process_job(q.job_id, q.date_str, q.camera_safe_name, q.interval)
-    db.expire_all()  # the processor wrote through its own sessions
     return q.job_id
 
 
-async def _weekly_rollups(db: AsyncSession) -> list[Timelapse]:
-    db.expire_all()
-    result = await db.execute(select(Timelapse).where(Timelapse.rollup_kind == "weekly"))
-    return list(result.scalars().all())
+async def _job(maker: Maker, job_id: str) -> object:
+    async with maker() as s:
+        return await job_crud.get_by_job_id(s, job_id)
 
 
-async def test_weekly_rollup_is_built_from_saved_frames(db: AsyncSession) -> None:
-    await _camera(db)
+async def _weekly_rollups(maker: Maker) -> list[Timelapse]:
+    async with maker() as s:
+        result = await s.execute(select(Timelapse).where(Timelapse.rollup_kind == "weekly"))
+        return list(result.scalars().all())
+
+
+async def test_weekly_rollup_is_built_from_saved_frames(durable_db: Maker) -> None:
+    await _camera(durable_db)
     _write_frames([date(2026, 10, 19), date(2026, 10, 20), date(2026, 10, 21)], every_minutes=20)
 
-    job_id = await _build(db, WEEK)
+    job_id = await _build(durable_db, WEEK)
 
-    job = await job_crud.get_by_job_id(db, job_id)
+    job = await _job(durable_db, job_id)
     assert job is not None and job.status == "completed", job.error if job else None
-    [rollup] = await _weekly_rollups(db)
+    [rollup] = await _weekly_rollups(durable_db)
     assert rollup.timelapse_date == WEEK[0] and rollup.end_date == WEEK[1]
     assert rollup.file_name == f"{CAMERA}_20261019_to_20261025_60s_weekly.mp4"
     assert rollup.frame_rate == 24
@@ -246,48 +258,50 @@ async def test_weekly_rollup_is_built_from_saved_frames(db: AsyncSession) -> Non
     assert rollup.frame_count == 72  # every hour (default), 24 a day, 3 days of frames
 
     # A roll-up is not the day's own timelapse.
-    assert (
-        await timelapse_crud.get_by_camera_date_interval(
-            db, camera_id="rollup-cam-uuid", timelapse_date=WEEK[0], interval=60
+    async with durable_db() as s:
+        assert (
+            await timelapse_crud.get_by_camera_date_interval(
+                s, camera_id="rollup-cam-uuid", timelapse_date=WEEK[0], interval=60
+            )
+            is None
         )
-        is None
-    )
 
 
-async def test_rebuilding_a_rollup_replaces_it(db: AsyncSession) -> None:
-    await _camera(db)
+async def test_rebuilding_a_rollup_replaces_it(durable_db: Maker) -> None:
+    await _camera(durable_db)
     _write_frames([date(2026, 10, 19), date(2026, 10, 20)], every_minutes=30)
 
-    await _build(db, (WEEK[0], date(2026, 10, 19)))  # "to date" after one day
-    [first] = await _weekly_rollups(db)
+    await _build(durable_db, (WEEK[0], date(2026, 10, 19)))  # "to date" after one day
+    [first] = await _weekly_rollups(durable_db)
     first_path = Path(first.file_path or "")
 
-    await _build(db, WEEK)  # the full week later
-    [second] = await _weekly_rollups(db)
+    await _build(durable_db, WEEK)  # the full week later
+    [second] = await _weekly_rollups(durable_db)
     assert second.end_date == WEEK[1] and second.frame_count == 48
     assert not first_path.exists()
 
 
-async def test_active_hours_and_spacing_shape_the_rollup(db: AsyncSession) -> None:
-    await _camera(db)
+async def test_active_hours_and_spacing_shape_the_rollup(durable_db: Maker) -> None:
+    await _camera(durable_db)
     _write_frames([date(2026, 10, 19), date(2026, 10, 20)], every_minutes=10)
-    settings = await scheduler_settings_crud.get_settings(db)
-    settings.timelapse_active_start = time(8, 0)
-    settings.timelapse_active_end = time(12, 0)
-    settings.rollup_weekly_step_minutes = 30
-    settings.rollup_weekly_frame_rate = 6
-    await db.commit()
+    async with durable_db() as s:
+        settings = await scheduler_settings_crud.get_settings(s)
+        settings.timelapse_active_start = time(8, 0)
+        settings.timelapse_active_end = time(12, 0)
+        settings.rollup_weekly_step_minutes = 30
+        settings.rollup_weekly_frame_rate = 6
+        await s.commit()
 
-    await _build(db, WEEK)
-    [rollup] = await _weekly_rollups(db)
+    await _build(durable_db, WEEK)
+    [rollup] = await _weekly_rollups(durable_db)
     assert rollup.frame_count == 16  # 08:00–12:00 in 30-minute slots = 8 a day, 2 days
     assert rollup.frame_rate == 6
 
 
-async def test_period_without_frames_fails_with_a_reason(db: AsyncSession) -> None:
-    await _camera(db)
-    job_id = await _build(db, (date(2026, 9, 7), date(2026, 9, 13)))
-    job = await job_crud.get_by_job_id(db, job_id)
+async def test_period_without_frames_fails_with_a_reason(durable_db: Maker) -> None:
+    await _camera(durable_db)
+    job_id = await _build(durable_db, (date(2026, 9, 7), date(2026, 9, 13)))
+    job = await _job(durable_db, job_id)
     assert job is not None and job.status == "failed"
     assert "Not enough frames" in (job.error or "")
-    assert await _weekly_rollups(db) == []
+    assert await _weekly_rollups(durable_db) == []
