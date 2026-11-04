@@ -61,3 +61,14 @@ def test_log_buffer_keeps_warnings_and_app_info() -> None:
     assert any("disk nearly full: 91%" in str(p.get("message")) for p in problems)
     assert any("built a timelapse" in str(c.get("message")) for c in context)
     assert not any("ignored" in str(c.get("message")) for c in context)
+
+
+def test_log_buffer_survives_logging_being_reconfigured() -> None:
+    """The in-app migrations call configure_logging again, which replaces the root handlers."""
+    from app.core import config, logging_config
+
+    log_buffer.install()
+    logging_config.configure_logging(service=config.SERVICE_NAME, version="test")
+    logging.getLogger("app.unit_test").error("after reconfiguring")
+    problems, _ = log_buffer.recent()
+    assert any("after reconfiguring" in str(p.get("message")) for p in problems)
