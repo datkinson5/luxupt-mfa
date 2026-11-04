@@ -26,7 +26,7 @@ from fastapi.templating import Jinja2Templates
 from slowapi.errors import RateLimitExceeded
 
 from app.clients.camera_manager import CameraManager, CameraManagerSettings
-from app.core import config
+from app.core import config, log_buffer
 from app.core.logging_config import configure_logging
 from app.core.trusted_host import AllowedHostsMiddleware
 from app.crud import activity_crud, camera_crud
@@ -230,6 +230,8 @@ async def sync_cameras_to_db(camera_manager: CameraManager) -> None:
 configure_logging(
     service=config.SERVICE_NAME, version=config.BUILD_VERSION, levels=config.LOG_LEVELS
 )
+# Fork: keep recent warnings and errors in memory for the health report download.
+log_buffer.install()
 
 
 @asynccontextmanager

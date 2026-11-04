@@ -436,3 +436,22 @@ async def update_backup_settings(
         "partials/system/backup_form_result.html",
         {"success": True, "message": "Backup settings saved"},
     )
+
+
+@router.get("/health-report")
+async def download_health_report(
+    request: Request,
+    view_service: SystemViewDep,
+    period: str = Query("24h"),
+    user: str = Depends(require_admin),
+) -> Response:
+    """Download the health report (fork): a zip straight to the browser, nothing saved on the NAS."""
+    filename, data = await view_service.health_report(period, request.url.hostname or "")
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )

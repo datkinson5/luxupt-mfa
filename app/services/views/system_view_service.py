@@ -15,6 +15,7 @@ from app.schemas.pagination_schema import build_pagination
 from app.services.core.activity_core_service import ActivityCoreService
 from app.services.core.camera_core_service import CameraCoreService
 from app.services.core.capture_stats_core_service import CaptureStatsCoreService
+from app.services.core.health_report_core_service import PERIODS, health_report_zip
 from app.services.core.settings_core_service import SettingsCoreService
 from app.services.core.timelapse_browser_core_service import TimelapseBrowserCoreService
 from app.services.views._camera_options import (
@@ -42,6 +43,15 @@ class SystemViewService:
         self.timelapse_service = timelapse_service
         self.activity_service = activity_service
         self.settings_service = settings_service
+
+    @staticmethod
+    def health_report_periods() -> list[dict[str, str]]:
+        labels = {"24h": "Last 24 hours", "7d": "Last 7 days", "30d": "Last 30 days"}
+        return [{"value": key, "label": labels[key]} for key in PERIODS]
+
+    async def health_report(self, period: str, host: str) -> tuple[str, bytes]:
+        """The health report zip (fork): file name and bytes, built from this request's session."""
+        return await health_report_zip(self.capture_stats_service.db, period, host)
 
     async def get_system_context(self) -> dict[str, Any]:
         """Get all data needed for system page."""
@@ -92,6 +102,7 @@ class SystemViewService:
             "service_status": service_status,
             "config_summary": config_summary,
             "version_info": version_info,
+            "health_periods": self.health_report_periods(),
         }
 
     async def _get_system_info(self) -> dict[str, Any]:

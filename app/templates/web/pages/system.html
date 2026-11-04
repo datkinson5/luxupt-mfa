@@ -98,6 +98,26 @@
 </div>
 {% endcall %}
 
+{# Health report (fork) #}
+{% if can_manage(request) %}
+{% call section("Health Report", "heart") %}
+{% call card("Download a health report", icon_name="document-arrow-down", color="primary") %}
+<form method="get" action="/system/health-report" class="flex flex-col gap-3 sm:flex-row sm:items-end">
+    <div>
+        <label for="health-period" class="block text-xs font-medium text-surface-200 mb-1">Period</label>
+        <select id="health-period" name="period" class="rounded-lg border border-surface-500 bg-surface-700 px-3 py-2 text-sm text-white">
+            {% for p in health_periods %}<option value="{{ p.value }}">{{ p.label }}</option>{% endfor %}
+        </select>
+    </div>
+    <button type="submit" class="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-500">
+        {{ icon('arrow-down-tray', 'w-4 h-4') }} Download
+    </button>
+</form>
+<p class="mt-3 text-xs text-surface-300">A zip that downloads straight to this computer: capture coverage and gaps per camera, grouped errors, missing or failed timelapses, frame-check results, camera offline events, Protect sign-in state, disk use, and recent warnings and errors from the log (since the last restart). No passwords or keys are included.</p>
+{% endcall %}
+{% endcall %}
+{% endif %}
+
 {# Configuration Section #}
 {% call section("Configuration", "cog-6-tooth") %}
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

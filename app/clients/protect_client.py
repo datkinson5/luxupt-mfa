@@ -106,6 +106,21 @@ def _shared_session(host: str, username: str, password: str, secret: str) -> _Sh
     return session
 
 
+def shared_session_status() -> list[dict[str, object]]:
+    """Each Protect sign-in this process holds: console, whether signed in, and any back-off
+    after a refusal (fork; for the health report). No usernames, passwords or secrets."""
+    now = time.monotonic()
+    return [
+        {
+            "console": host,
+            "signed_in": session.cookies is not None,
+            "backing_off_seconds": max(0, round(session.failed_until - now)),
+            "last_failure": session.failure or None,
+        }
+        for (_, host, _, _), session in _SESSIONS.items()
+    ]
+
+
 def _reset_shared_sessions() -> None:
     """Forget every shared sign-in (tests)."""
     _SESSIONS.clear()

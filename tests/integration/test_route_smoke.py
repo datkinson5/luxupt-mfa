@@ -132,6 +132,7 @@ STATIC_GETS = [
     "/images/delete",
     "/images/delete/preview",
     "/system/about",
+    "/system/health-report",
     "/system/activity",
     "/system/users",
     "/system/partials/activity",
