@@ -44,6 +44,7 @@ PERIODS = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30}
 GAP_SLOTS = 3  # a run of 3+ missed captures is reported as a gap
 TOP = 25
 STUCK_AFTER = timedelta(hours=6)
+MAX_CAPTURE_MS = 10 * 60 * 1000
 
 FETCH_FIELDS = (
     "enabled",
@@ -167,9 +168,14 @@ async def build_report(db: AsyncSession, hours: int, *, now: datetime | None = N
 
 def _settings(fetch: Any, scheduler: Any) -> dict[str, Any]:
     capture = {name: _plain(getattr(fetch, name, None)) for name in FETCH_FIELDS}
-    capture["api_key_set"] = bool(getattr(fetch, "api_key", None))
-    capture["protect_login_set"] = bool(getattr(fetch, "username", None) and getattr(fetch, "password", None))
-    capture["console_set"] = bool(getattr(fetch, "base_url", None))
+    # Set in the container's environment or saved in the settings: either counts.
+    capture["api_key_set"] = bool(config.UNIFI_PROTECT_API_KEY or getattr(fetch, "api_key", None))
+    capture["protect_login_set"] = bool(
+        (config.UNIFI_PROTECT_USERNAME or getattr(fetch, "username", None))
+        and (config.UNIFI_PROTECT_PASSWORD or getattr(fetch, "password", None))
+    )
+    capture["protect_mfa_set"] = bool(config.UNIFI_PROTECT_TOTP_SECRET)
+    capture["console_set"] = bool(config.UNIFI_PROTECT_BASE_URL or getattr(fetch, "base_url", None))
     timelapse = {
         column.name: _plain(getattr(scheduler, column.name))
         for column in scheduler.__table__.columns
@@ -209,23 +215,47 @@ async def _cameras(
         entry = series[(camera, interval)]
         if status == CaptureStatus.SUCCESS:
             entry.successes.append(stamp)
-            if duration:
+            if duration and 0 < duration < MAX_CAPTURE_MS:  # older RTSP rows hold a bad value
                 entry.durations.append(duration)
         else:
             entry.failures.append((stamp, error_kind(error)))
         if method is not None:
             entry.methods[_plain(method)] += 1
 
+    # Every camera's first capture ever and last successful one, from the captures themselves:
+    # a camera added part-way through the period is only expected from its first capture.
+    first_seen = dict(
+        (await db.execute(
+            select(Capture.camera_safe_name, func.min(Capture.timestamp)).group_by(Capture.camera_safe_name)
+        )).all()
+    )
+    last_ok = dict(
+        (await db.execute(
+            select(Capture.camera_safe_name, func.max(Capture.timestamp))
+            .where(Capture.status == CaptureStatus.SUCCESS)
+            .group_by(Capture.camera_safe_name)
+        )).all()
+    )
+
+    def stamp(value: int | None) -> str | None:
+        return None if value is None else _local(datetime.fromtimestamp(value, UTC))
+
     out = []
     default_intervals = list(getattr(fetch, "intervals", None) or [])
+    listed = set()
     for camera in (await db.execute(select(Camera).order_by(Camera.name))).scalars().all():
+        listed.add(camera.safe_name)
         intervals = sorted(
             set(camera.enabled_intervals or default_intervals)
             | {i for (name, i) in series if name == camera.safe_name}
         )
         start = since
         if camera.first_discovered_at is not None:
-            start = max(since, _aware(camera.first_discovered_at))
+            start = max(start, _aware(camera.first_discovered_at))
+        if camera.safe_name in first_seen:
+            start = max(start, datetime.fromtimestamp(first_seen[camera.safe_name], UTC))
+        elif camera.first_discovered_at is None:
+            start = now  # never captured and no discovery date: nothing to expect yet
         out.append(
             {
                 "camera": camera.safe_name,
@@ -235,11 +265,34 @@ async def _cameras(
                 "state": camera.state,
                 "model": camera.model_key,
                 "capture_method": _plain(camera.capture_method),
-                "last_seen": _local(camera.last_seen_at),
-                "last_capture": _local(camera.last_capture_at),
+                "expected_from": _local(start),
+                "first_capture_ever": stamp(first_seen.get(camera.safe_name)),
+                "last_capture": stamp(last_ok.get(camera.safe_name)),
                 "intervals": [
                     _interval_stats(series.get((camera.safe_name, i)), i, start, now, window)
                     for i in intervals
+                ],
+            }
+        )
+
+    # Captures under a name no camera has now (a camera renamed or removed in Protect).
+    for name in sorted({name for (name, _) in series} - listed):
+        out.append(
+            {
+                "camera": name,
+                "name": f"{name} (not in the camera list: renamed or removed?)",
+                "active": False,
+                "connected": False,
+                "state": "unknown",
+                "model": None,
+                "capture_method": None,
+                "expected_from": None,
+                "first_capture_ever": stamp(first_seen.get(name)),
+                "last_capture": stamp(last_ok.get(name)),
+                "intervals": [
+                    _interval_stats(entry, i, now, now, window)
+                    for (n, i), entry in sorted(series.items())
+                    if n == name
                 ],
             }
         )
@@ -521,11 +574,17 @@ def _findings(report: dict[str, Any]) -> list[dict[str, str]]:
         found.append((rank, level, text))
 
     for camera in report["cameras"]:
+        if camera["state"] == "unknown":
+            n = sum(s["captured"] for s in camera["intervals"])
+            add(2, "check", f"{n} captures saved under \"{camera['camera']}\", which no camera in the list has now (renamed or removed in Protect?).")
+            continue
         if not camera["active"]:
             continue
         label = camera["name"]
         if not camera["connected"]:
-            add(0, "problem", f"{label}: not connected to Protect now (last seen {camera['last_seen']}).")
+            add(0, "problem", f"{label}: not connected to Protect now (last capture {camera['last_capture']}).")
+        elif camera["intervals"] and not any(s["captured"] for s in camera["intervals"]):
+            add(0, "problem", f"{label}: connected but nothing captured in the period (last capture {camera['last_capture']}).")
         for stats in camera["intervals"]:
             cov = stats["coverage"]
             name = f"{label} {stats['interval']}s"
@@ -594,7 +653,10 @@ def _summary_text(report: dict[str, Any], host: str) -> str:
     for camera in report["cameras"]:
         state = "connected" if camera["connected"] else "NOT CONNECTED"
         active = "" if camera["active"] else " (inactive)"
-        lines.append(f"  {camera['name']}{active}: {state}, last capture {camera['last_capture']}")
+        lines.append(
+            f"  {camera['name']}{active}: {state}, last capture {camera['last_capture']}, "
+            f"counted from {camera['expected_from']}"
+        )
         for s in camera["intervals"]:
             cov = "n/a" if s["coverage"] is None else f"{s['coverage']}%"
             lines.append(

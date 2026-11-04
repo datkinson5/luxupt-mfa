@@ -152,3 +152,63 @@ async def test_readers_cannot_download(client: AsyncClient, db: AsyncSession) ->
     await user_crud.create_user(db, username="viewer", password="a-long-password-123", is_admin=False)
     await client.post("/login", data={"username": "viewer", "password": "a-long-password-123"})
     assert (await client.get("/system/health-report")).status_code == 403
+
+
+async def test_new_and_renamed_cameras_are_counted_fairly(
+    auth_client: AsyncClient, db: AsyncSession
+) -> None:
+    """A camera with no discovery date is expected from its first capture; captures under a
+    name no camera has now are shown, not dropped; a connected camera with nothing is flagged."""
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    for safe, discovered in (("New_Cam", None), ("Quiet_Cam", None)):
+        db.add(
+            Camera(
+                camera_id=f"{safe}-uuid",
+                name=safe.replace("_", " "),
+                safe_name=safe,
+                is_active=True,
+                is_connected=True,
+                capture_method=CaptureMethod.AUTO,
+                rtsp_quality="high",
+                enabled_intervals=[60],
+                first_discovered_at=discovered,
+            )
+        )
+    def capture(name: str, minutes_ago: int, *, rtsp_bug: bool = False) -> Capture:
+        moment = now - timedelta(minutes=minutes_ago)
+        return Capture(
+            camera_id=f"{name}-uuid",
+            camera_safe_name=name,
+            timestamp=int(moment.timestamp()),
+            capture_datetime=moment,
+            capture_date=to_display(moment).date(),
+            interval=60,
+            status=CaptureStatus.SUCCESS,
+            capture_method=CaptureMethod.RTSP,
+            capture_duration_ms=int(moment.timestamp() * 1000) if rtsp_bug else 900,
+            file_size=1000,
+        )
+
+    for m in range(30, 0, -1):  # New_Cam: captures every minute for the last 30 minutes
+        db.add(capture("New_Cam", m, rtsp_bug=m % 2 == 0))
+    db.add(capture("Quiet_Cam", 60 * 30))  # Quiet_Cam: last captured 30 hours ago
+    for m in range(120, 100, -1):  # an old name, 20 captures two hours ago
+        db.add(capture("Old_Name", m))
+    await db.flush()
+
+    files = _open((await auth_client.get("/system/health-report?period=24h")).content)
+    report = json.loads(files["report.json"])
+    cams = {c["camera"]: c for c in report["cameras"]}
+
+    new = cams["New_Cam"]["intervals"][0]
+    assert 29 <= new["expected"] <= 31 and new["captured"] == 30 and new["gap_count"] == 0
+    assert new["capture_ms"]["median"] == 900  # the bad RTSP durations are ignored
+
+    assert cams["Quiet_Cam"]["intervals"][0]["captured"] == 0
+    assert cams["Quiet_Cam"]["last_capture"] is not None
+    assert cams["Old_Name"]["state"] == "unknown" and cams["Old_Name"]["intervals"][0]["captured"] == 20
+
+    texts = " ".join(f["text"] for f in report["findings"])
+    assert "Quiet Cam: connected but nothing captured" in texts
+    assert '20 captures saved under "Old_Name"' in texts
+    assert "New Cam 60s: only" not in texts

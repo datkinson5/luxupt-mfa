@@ -767,7 +767,9 @@ class CameraManager:
         )
 
         try:
-            start_time = time_module.perf_counter()
+            # Its own name: make_result() reads start_time (wall clock) for the capture's
+            # duration, and reusing it here made every RTSP duration a Unix time in ms.
+            encode_start = time_module.perf_counter()
 
             process = await asyncio.create_subprocess_exec(
                 *ffmpeg_command,
@@ -779,7 +781,7 @@ class CameraManager:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=capture_timeout
                 )
-                encode_duration_ms = (time_module.perf_counter() - start_time) * 1000
+                encode_duration_ms = (time_module.perf_counter() - encode_start) * 1000
 
                 exists, file_size = await async_fs.file_exists_and_size(output_path)
                 if process.returncode == 0 and exists:
