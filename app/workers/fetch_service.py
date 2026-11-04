@@ -235,6 +235,7 @@ class FetchService:
                     await camera_crud.upsert_from_dict(db, data=camera_data)
 
                 await db.commit()
+                self._last_camera_sync = time.monotonic()
                 logger.info(
                     "Synced cameras to database", extra={"camera_count": len(cameras)}
                 )
@@ -567,6 +568,12 @@ class FetchService:
                                 extra={"error": str(e)},
                             )
 
+                # Fork: re-sync the camera list from Protect every camera_refresh_interval.
+                # Only startup and an API settings change did this, so a camera adopted while
+                # the service ran was never captured (the capture loop skips cameras not in
+                # the database) and online/offline changes were never recorded.
+                await self._resync_cameras_if_due(cm_settings)
+
                 # Load current intervals from database
                 new_intervals = await self._load_intervals_from_db()
 
@@ -613,6 +620,22 @@ class FetchService:
                 logger.exception(
                     "Error monitoring settings changes", extra={"error": str(e)}
                 )
+
+    async def _resync_cameras_if_due(self, cm_settings: CameraManagerSettings) -> None:
+        """Sync cameras to the database when camera_refresh_interval has passed (fork)."""
+        if not (cm_settings.base_url and cm_settings.api_key):
+            return
+        if not (hasattr(self, "camera_manager") and self.camera_manager):
+            return
+        every = max(60, int(cm_settings.camera_refresh_interval or 300))
+        last = getattr(self, "_last_camera_sync", None)
+        if last is not None and time.monotonic() - last < every:
+            return
+        self._last_camera_sync = time.monotonic()  # also on failure: retry next period
+        try:
+            await self._sync_cameras_to_db()
+        except Exception as e:
+            logger.warning("Periodic camera sync failed", extra={"error": str(e)})
 
     async def _refresh_capture_window(self) -> None:
         """Re-read the capture active hours (fork); keeps the last value if the read fails."""
