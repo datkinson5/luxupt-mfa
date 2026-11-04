@@ -27,6 +27,23 @@ class CRUDCamera(CRUDBase[Camera, CameraCreate, CameraUpdate]):
         result = await db.execute(select(Camera).where(Camera.safe_name == safe_name))
         return result.scalar_one_or_none()
 
+    async def mark_missing_disconnected(
+        self, db: AsyncSession, present_ids: set[str]
+    ) -> list[Camera]:
+        """Fork: cameras Protect no longer lists (unadopted, or removed while offline) kept
+        whatever state they last had, so a gone camera could read as connected for ever. Mark
+        each still shown as connected disconnected; returns the cameras changed."""
+        result = await db.execute(select(Camera).where(Camera.is_connected.is_(True)))
+        changed = []
+        for camera in result.scalars().all():
+            if camera.camera_id not in present_ids:
+                camera.is_connected = False
+                camera.state = "NOT_IN_PROTECT"
+                changed.append(camera)
+        if changed:
+            await db.flush()
+        return changed
+
     async def get_active(self, db: AsyncSession) -> list[Camera]:
         """Get all active cameras."""
         result = await db.execute(

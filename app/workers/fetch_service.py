@@ -234,6 +234,20 @@ class FetchService:
 
                     await camera_crud.upsert_from_dict(db, data=camera_data)
 
+                # Fork: a camera Protect no longer lists is not connected, whatever it was.
+                # Only when Protect returned cameras, so an empty or failed answer changes nothing.
+                if cameras:
+                    for gone in await camera_crud.mark_missing_disconnected(
+                        db, {c.id for c in cameras}
+                    ):
+                        await activity_crud.log(
+                            db,
+                            activity_type=ActivityType.CAMERA_OFFLINE,
+                            message=f"{gone.name} is no longer listed by Protect",
+                            camera_id=gone.camera_id,
+                            camera_safe_name=gone.safe_name,
+                        )
+
                 await db.commit()
                 self._last_camera_sync = time.monotonic()
                 logger.info(

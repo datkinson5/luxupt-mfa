@@ -115,3 +115,28 @@ async def test_a_failed_sync_is_retried_next_period(db: AsyncSession) -> None:
     await service._resync_cameras_if_due(_settings())
     await service._resync_cameras_if_due(_settings())
     assert manager.calls == 1  # waits for the next period rather than hammering the console
+
+
+async def test_a_camera_protect_no_longer_lists_is_marked_disconnected(db: AsyncSession) -> None:
+    service = FetchService.__new__(FetchService)
+    manager = _FakeManager()
+    service.camera_manager = manager  # type: ignore[assignment]
+    manager.cameras = [_api_camera("cam-a", "Cam A"), _api_camera("cam-b", "Timelapse Test")]
+    await service._resync_cameras_if_due(_settings())
+
+    manager.cameras = [_api_camera("cam-a", "Cam A")]  # Timelapse Test unadopted / removed
+    service._last_camera_sync -= 301
+    await service._resync_cameras_if_due(_settings())
+    db.expire_all()
+    gone = await camera_crud.get_by_camera_id(db, "cam-b")
+    assert gone is not None and not gone.is_connected and gone.state == "NOT_IN_PROTECT"
+    events = (await db.execute(select(Activity.message))).scalars().all()
+    assert "Timelapse Test is no longer listed by Protect" in events
+
+    # An empty answer from Protect (an outage) changes nothing.
+    manager.cameras = []
+    service._last_camera_sync -= 301
+    await service._resync_cameras_if_due(_settings())
+    db.expire_all()
+    still = await camera_crud.get_by_camera_id(db, "cam-a")
+    assert still is not None and still.is_connected

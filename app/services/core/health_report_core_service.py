@@ -154,6 +154,7 @@ async def build_report(db: AsyncSession, hours: int, *, now: datetime | None = N
         "settings": _settings(fetch, scheduler),
     }
     report["cameras"] = await _cameras(db, fetch, since, now, capture_window)
+    report["live_capture"] = bool(getattr(fetch, "enabled", True))
     report["jobs"] = await _jobs(db, since, now)
     report["timelapses"] = await _timelapses(db, scheduler, since, now)
     report["connectivity"] = await _connectivity(db, since)
@@ -242,9 +243,10 @@ async def _cameras(
 
     out = []
     default_intervals = list(getattr(fetch, "intervals", None) or [])
-    listed = set()
+    capture_on = bool(getattr(fetch, "enabled", True))
+    listed: dict[str, str] = {}
     for camera in (await db.execute(select(Camera).order_by(Camera.name))).scalars().all():
-        listed.add(camera.safe_name)
+        listed[camera.safe_name] = camera.name
         intervals = sorted(
             set(camera.enabled_intervals or default_intervals)
             | {i for (name, i) in series if name == camera.safe_name}
@@ -254,8 +256,10 @@ async def _cameras(
             start = max(start, _aware(camera.first_discovered_at))
         if camera.safe_name in first_seen:
             start = max(start, datetime.fromtimestamp(first_seen[camera.safe_name], UTC))
-        elif camera.first_discovered_at is None:
-            start = now  # never captured and no discovery date: nothing to expect yet
+        else:
+            start = now  # never captured: nothing to expect until its first capture
+        if not capture_on:
+            start = now  # live capture is off on this NAS (it builds from recordings)
         out.append(
             {
                 "camera": camera.safe_name,
@@ -267,6 +271,11 @@ async def _cameras(
                 "capture_method": _plain(camera.capture_method),
                 "expected_from": _local(start),
                 "first_capture_ever": stamp(first_seen.get(camera.safe_name)),
+                "first_capture_day": (
+                    to_display(datetime.fromtimestamp(first_seen[camera.safe_name], UTC)).date().isoformat()
+                    if camera.safe_name in first_seen
+                    else None
+                ),
                 "last_capture": stamp(last_ok.get(camera.safe_name)),
                 "intervals": [
                     _interval_stats(series.get((camera.safe_name, i)), i, start, now, window)
@@ -276,10 +285,13 @@ async def _cameras(
         )
 
     # Captures under a name no camera has now (a camera renamed or removed in Protect).
-    for name in sorted({name for (name, _) in series} - listed):
+    for name in sorted({name for (name, _) in series} - set(listed)):
+        # "G6_Pro_Turret" -> "G6_Pro_Turret_7310": a rename in Protect usually adds to the name.
+        likely = sorted(n for n in listed if n.startswith(f"{name}_"))
         out.append(
             {
                 "camera": name,
+                "likely_now": [listed[n] for n in likely],
                 "name": f"{name} (not in the camera list: renamed or removed?)",
                 "active": False,
                 "connected": False,
@@ -435,6 +447,12 @@ async def _timelapses(
             )
 
     missing = []
+    first_days = dict(
+        (await db.execute(
+            select(Capture.camera_safe_name, func.min(Capture.capture_date)).group_by(Capture.camera_safe_name)
+        )).all()
+    )
+    from_recordings = _plain(scheduler.source) == "historical"
     if scheduler.enabled and first_day <= yesterday:
         cameras = list(await camera_crud.get_active(db))
         if scheduler.enabled_cameras:
@@ -444,12 +462,16 @@ async def _timelapses(
             for interval in intervals:
                 if camera.enabled_intervals and interval not in camera.enabled_intervals:
                     continue
-                day = first_day
+                # From recordings a day can be built whenever the camera existed; from live
+                # captures only once it has been captured. Before either, nothing is missing.
+                began = first_days.get(camera.safe_name)
+                if began is None and from_recordings and camera.first_discovered_at is not None:
+                    began = to_display(_aware(camera.first_discovered_at)).date()
+                if began is None:
+                    continue
+                day = max(first_day, began)
                 while day <= yesterday:
-                    discovered = camera.first_discovered_at
-                    if day not in daily[(camera.safe_name, interval)] and (
-                        discovered is None or to_display(_aware(discovered)).date() <= day
-                    ):
+                    if day not in daily[(camera.safe_name, interval)]:
                         missing.append(
                             {"camera": camera.safe_name, "interval": interval, "date": day.isoformat()}
                         )
@@ -576,15 +598,30 @@ def _findings(report: dict[str, Any]) -> list[dict[str, str]]:
     for camera in report["cameras"]:
         if camera["state"] == "unknown":
             n = sum(s["captured"] for s in camera["intervals"])
-            add(2, "check", f"{n} captures saved under \"{camera['camera']}\", which no camera in the list has now (renamed or removed in Protect?).")
+            now_named = camera.get("likely_now") or []
+            hint = (
+                f"probably renamed to {' / '.join(now_named)} in Protect"
+                if now_named
+                else "renamed or removed in Protect?"
+            )
+            add(3, "check", f"{n} captures saved under \"{camera['camera']}\" until {camera['last_capture']} ({hint}).")
             continue
         if not camera["active"]:
             continue
         label = camera["name"]
+        expecting = any(s["expected"] for s in camera["intervals"])
         if not camera["connected"]:
+            # One finding for a camera that is down; its coverage and gaps say the same thing.
             add(0, "problem", f"{label}: not connected to Protect now (last capture {camera['last_capture']}).")
-        elif camera["intervals"] and not any(s["captured"] for s in camera["intervals"]):
+            continue
+        if report.get("live_capture", True) and camera["first_capture_ever"] is None:
+            # Connected but never captured at all: what a camera adopted while the service
+            # ran looked like before the periodic camera sync.
+            add(0, "problem", f"{label}: connected but has never been captured.")
+            continue
+        if expecting and not any(s["captured"] for s in camera["intervals"]):
             add(0, "problem", f"{label}: connected but nothing captured in the period (last capture {camera['last_capture']}).")
+            continue
         for stats in camera["intervals"]:
             cov = stats["coverage"]
             name = f"{label} {stats['interval']}s"
@@ -649,7 +686,11 @@ def _summary_text(report: dict[str, Any], host: str) -> str:
     ]
     marks = {"problem": "!!", "check": " ?", "ok": "ok"}
     lines += [f"  {marks[f['level']]} {f['text']}" for f in report["findings"]]
-    lines += ["", "CAMERAS"]
+    lines += [
+        "",
+        "CAMERAS"
+        + ("" if report.get("live_capture", True) else " (live capture is OFF on this NAS: no captures expected)"),
+    ]
     for camera in report["cameras"]:
         state = "connected" if camera["connected"] else "NOT CONNECTED"
         active = "" if camera["active"] else " (inactive)"

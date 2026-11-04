@@ -212,3 +212,50 @@ async def test_new_and_renamed_cameras_are_counted_fairly(
     assert "Quiet Cam: connected but nothing captured" in texts
     assert '20 captures saved under "Old_Name"' in texts
     assert "New Cam 60s: only" not in texts
+
+
+async def test_capture_off_renames_and_missing_days(auth_client: AsyncClient, db: AsyncSession) -> None:
+    """Live capture off expects nothing; an old name points at the renamed camera; a day before
+    a camera's first capture is not a missing timelapse; never captured is its own finding."""
+    from app.crud.scheduler_settings_crud import scheduler_settings_crud
+
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    for safe in ("Gate_Cam_7310", "Fresh_Cam"):
+        db.add(
+            Camera(
+                camera_id=f"{safe}-uuid", name=safe.replace("_", " "), safe_name=safe,
+                is_active=True, is_connected=True, capture_method=CaptureMethod.AUTO,
+                rtsp_quality="high", enabled_intervals=[60],
+                first_discovered_at=now - timedelta(days=3),
+            )
+        )
+    for name, minutes in (("Gate_Cam", 200), ("Gate_Cam_7310", 30)):
+        for m in range(minutes, minutes - 10, -1):
+            moment = now - timedelta(minutes=m)
+            db.add(Capture(
+                camera_id="x", camera_safe_name=name, timestamp=int(moment.timestamp()),
+                capture_datetime=moment, capture_date=to_display(moment).date(), interval=60,
+                status=CaptureStatus.SUCCESS, capture_method=CaptureMethod.RTSP, file_size=10,
+            ))
+    sched = await scheduler_settings_crud.get_settings(db)
+    sched.enabled, sched.enabled_cameras, sched.enabled_intervals = True, ["Gate_Cam_7310", "Fresh_Cam"], [60]
+    await db.flush()
+
+    report = json.loads(_open((await auth_client.get("/system/health-report?period=7d")).content)["report.json"])
+    texts = " ".join(f["text"] for f in report["findings"])
+    assert "probably renamed to Gate Cam 7310 in Protect" in texts
+    assert "Fresh Cam: connected but has never been captured." in texts
+    first = to_display(now - timedelta(minutes=30)).date()
+    days = {m["date"] for m in report["timelapses"]["daily_missing"] if m["camera"] == "Gate_Cam_7310"}
+    assert all(d >= first.isoformat() for d in days)
+    assert not any(m["camera"] == "Fresh_Cam" for m in report["timelapses"]["daily_missing"])
+
+    fetch = await fetch_settings_crud.get_settings(db)
+    fetch.enabled = False
+    await db.flush()
+    files = _open((await auth_client.get("/system/health-report?period=24h")).content)
+    report = json.loads(files["report.json"])
+    assert report["live_capture"] is False
+    assert all(s["expected"] == 0 for c in report["cameras"] for s in c["intervals"])
+    assert "live capture is OFF" in files["summary.txt"]
+    assert "never been captured" not in " ".join(f["text"] for f in report["findings"])
