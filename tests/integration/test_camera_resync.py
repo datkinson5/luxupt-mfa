@@ -140,3 +140,23 @@ async def test_a_camera_protect_no_longer_lists_is_marked_disconnected(db: Async
     db.expire_all()
     still = await camera_crud.get_by_camera_id(db, "cam-a")
     assert still is not None and still.is_connected
+
+
+async def test_capture_off_stays_off_when_the_check_fails(db: AsyncSession, monkeypatch: Any) -> None:
+    """A locked database must not switch live capture back on."""
+    import app.workers.fetch_service as fetch_module
+
+    service = FetchService.__new__(FetchService)
+    service._last_fetch_enabled = False
+
+    class Locked:
+        async def __aenter__(self) -> None:
+            raise RuntimeError("database is locked")
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(fetch_module, "get_db_context", lambda: Locked())
+    assert await service._check_fetch_enabled() is False
+    service._last_fetch_enabled = True
+    assert await service._check_fetch_enabled() is True

@@ -668,15 +668,24 @@ class FetchService:
             self._capture_window = window
 
     async def _check_fetch_enabled(self) -> bool:
-        """Check if fetch is globally enabled in database settings."""
+        """Check if fetch is globally enabled in database settings.
+
+        Fork: when the check fails (seen live: "database is locked" while a long timelapse
+        job held the database), keep the last answer instead of assuming "on". Assuming on
+        made a NAS with capture switched off fire a burst of stale live captures.
+        """
         try:
             async with get_db_context() as session:
-                return await fetch_settings_crud.is_enabled(session)
+                enabled = await fetch_settings_crud.is_enabled(session)
         except Exception as e:
+            last = getattr(self, "_last_fetch_enabled", True)
             logger.warning(
-                "Failed to check fetch enabled status", extra={"error": str(e)}
+                "Failed to check fetch enabled status; keeping the last setting",
+                extra={"error": str(e), "enabled": last},
             )
-            return True  # Default to enabled if check fails
+            return last
+        self._last_fetch_enabled = enabled
+        return enabled
 
     async def _run_interval(self, interval: int) -> None:
         """Run capture loop for a specific interval."""

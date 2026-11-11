@@ -459,6 +459,8 @@ async def _timelapses(
             cameras = [c for c in cameras if c.safe_name in scheduler.enabled_cameras]
         intervals = scheduler.enabled_intervals or sorted({i for (_, i) in daily}) or []
         for camera in cameras:
+            if camera.state == "NOT_IN_PROTECT":
+                continue  # removed from Protect: its missing days are not news
             for interval in intervals:
                 if camera.enabled_intervals and interval not in camera.enabled_intervals:
                     continue
