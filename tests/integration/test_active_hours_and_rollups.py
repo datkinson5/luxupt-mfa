@@ -486,14 +486,9 @@ async def test_no_checks_no_report(durable_db: Maker) -> None:
     assert rollup.quality_report is None and rollup.frame_count == 24
 
 
-async def test_video_format_setting_saves_and_encodes_h264(
-    auth_client: AsyncClient, durable_db: Maker
-) -> None:
+async def test_video_format_h264_encodes_h264(durable_db: Maker) -> None:
     import json as _json
     import subprocess
-
-    panel = await auth_client.get("/timelapses/scheduler")
-    assert "Video Format" in panel.text and 'value="h264"' in panel.text
 
     await _camera(durable_db)
     _write_frames([date(2026, 10, 19)], every_minutes=30)
@@ -512,6 +507,8 @@ async def test_video_format_setting_saves_and_encodes_h264(
 
 
 async def test_video_format_is_saved_from_the_form(auth_client: AsyncClient, db: AsyncSession) -> None:
+    panel = await auth_client.get("/timelapses/scheduler")
+    assert "Video Format" in panel.text and 'value="h264"' in panel.text
     resp = await auth_client.post(
         "/timelapses/scheduler", data={"enabled": "on", "run_time": "01:00", "video_codec": "h264"}
     )
