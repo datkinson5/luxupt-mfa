@@ -54,8 +54,42 @@ def encode_command(
     crf: int,
     preset: str,
     pixel_format: str,
+    codec: str = "h265",
 ) -> list[str]:
-    """The HEVC encode: progress on stdout (``-progress pipe:1``), warnings only on stderr."""
+    """The encode: progress on stdout (``-progress pipe:1``), warnings only on stderr.
+
+    ``codec`` "h265" (the default: smaller files) or "h264" (fork: plays in every browser
+    and phone, and encodes several times faster). H.264 is always 8-bit 4:2:0 (yuv420p),
+    the format players expect, whatever pixel format is set for H.265.
+    """
+    if codec == "h264":
+        video = [
+            "-c:v",
+            "libx264",
+            "-crf",
+            str(crf),
+            "-preset",
+            preset,
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "high",
+            "-tag:v",
+            "avc1",
+        ]
+    else:
+        video = [
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            f"log-level=0:crf={crf}",
+            "-preset",
+            preset,
+            "-pix_fmt",
+            pixel_format,
+            "-tag:v",
+            "hvc1",
+        ]
     return [
         "ffmpeg",
         "-y",  # Always overwrite (callers check existence before encoding)
@@ -65,16 +99,7 @@ def encode_command(
         "-progress",
         "pipe:1",
         *input_args,
-        "-c:v",
-        "libx265",
-        "-x265-params",
-        f"log-level=0:crf={crf}",
-        "-preset",
-        preset,
-        "-pix_fmt",
-        pixel_format,
-        "-tag:v",
-        "hvc1",
+        *video,
         "-movflags",
         "+faststart",
         "-color_primaries",

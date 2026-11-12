@@ -64,7 +64,7 @@ async def save_scheduler_settings(
     extras = {
         key: value
         for key, value in form.items()
-        if key.startswith(("timelapse_active_", "rollup_", "rollups_form", "quality_"))
+        if key.startswith(("timelapse_active_", "rollup_", "rollups_form", "quality_", "video_codec"))
         and isinstance(value, str)
     }
     context = await view_service.save_scheduler_settings(

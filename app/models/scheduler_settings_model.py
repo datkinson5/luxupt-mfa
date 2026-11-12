@@ -136,5 +136,8 @@ class SchedulerSettings(Base, TimestampMixin):
     quality_blur_percent: Mapped[int] = mapped_column(Integer, default=40, nullable=False)
     quality_rain_percent: Mapped[int] = mapped_column(Integer, default=25, nullable=False)
 
+    # Fork: video codec for new timelapses, "h265" (smaller) or "h264" (plays everywhere).
+    video_codec: Mapped[str] = mapped_column(String(8), default="h265", nullable=False)
+
     def __repr__(self) -> str:
         return f"<SchedulerSettings(enabled={self.enabled}, run_time={self.run_time})>"

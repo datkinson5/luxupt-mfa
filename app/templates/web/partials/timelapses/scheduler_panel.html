@@ -176,6 +176,12 @@
                         </div>
                     </div>
                     <div>
+                        <label for="scheduler-video-codec" class="block text-xs font-medium text-surface-200 mb-1">Video Format
+                            <span class="text-surface-400">— for timelapses built from now on</span>
+                        </label>
+                        {{ select("video_codec", codec_options, selected=video_codec, placeholder=none) }}
+                    </div>
+                    <div>
                         <label for="scheduler-preset" class="block text-xs font-medium text-surface-200 mb-1">Preset</label>
                         {{ select("preset", preset_options,
                                   selected=settings.preset, placeholder=none) }}

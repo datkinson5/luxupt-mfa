@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 
 
 # Fork: roll-up frame spacing choices (minutes; 1440 = once a day, nearest the target time).
+# Fork: video codec for new timelapses.
+CODEC_OPTIONS = [
+    {"value": "h265", "label": "H.265 (HEVC): smaller files"},
+    {"value": "h264", "label": "H.264: plays everywhere, faster to encode"},
+]
+
 # Frame checks (fork): (field, lowest, highest) for the three thresholds.
 QUALITY_LIMITS = (
     ("quality_dark_level", 5, 120),
@@ -308,6 +314,8 @@ class TimelapsesViewService:
             "historical_available": historical_available,
             "source_selected": source_selected,
             "pixel_format_options": PIXEL_FORMAT_OPTIONS,
+            "codec_options": CODEC_OPTIONS,
+            "video_codec": getattr(settings, "video_codec", "h265") or "h265",
             "preset_options": PRESET_OPTIONS,
             "rollup_step_options": ROLLUP_STEP_OPTIONS,
             "rollup_kinds": [
@@ -433,6 +441,8 @@ class TimelapsesViewService:
                 data[f"rollup_{kind.value}_enabled"] = (
                     form.get(f"rollup_{kind.value}_enabled") is not None
                 )
+        if form.get("video_codec") in ("h265", "h264"):
+            data["video_codec"] = form.get("video_codec")
         # Frame checks: toggles only from the full panel (quality_form), like the roll-ups.
         if form.get("quality_form"):
             for name in ("quality_exclude", *(f"quality_{c.value}_enabled" for c in Check)):

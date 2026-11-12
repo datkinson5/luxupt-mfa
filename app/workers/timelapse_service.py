@@ -57,6 +57,7 @@ class EncodingSettings:
     preset: str
     pixel_format: str
     ffmpeg_timeout: int
+    codec: str = "h265"  # fork: "h265" or "h264"
 
     @classmethod
     def from_scheduler_settings(cls, settings: SchedulerSettings) -> EncodingSettings:
@@ -67,6 +68,7 @@ class EncodingSettings:
             preset=settings.preset,
             pixel_format=settings.pixel_format,
             ffmpeg_timeout=settings.ffmpeg_timeout,
+            codec=getattr(settings, "video_codec", "h265") or "h265",
         )
 
 
@@ -1130,6 +1132,7 @@ class TimelapseService:
             crf=encoding_settings.crf,
             preset=encoding_settings.preset,
             pixel_format=encoding_settings.pixel_format,
+            codec=encoding_settings.codec,
         )
 
         logger.info(
