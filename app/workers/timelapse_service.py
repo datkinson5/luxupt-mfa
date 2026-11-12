@@ -846,12 +846,18 @@ class TimelapseService:
     def _find_image_files(
         self, images_path: Path, camera_safe_name: str
     ) -> tuple[list[Path], str]:
-        """Find image files for a camera, checking PNG then JPG. Returns (files, format)."""
-        files = list(images_path.glob(f"{camera_safe_name}_*.png"))
-        if files:
-            return files, "png"
-        files = list(images_path.glob(f"{camera_safe_name}_*.jpg"))
-        return files, "jpg"
+        """Find image files for a camera: the fuller of the PNG and JPG sets. Returns (files, format).
+
+        Fork: a day can hold both, live captures (PNG from RTSP) and frames fetched from
+        Protect recordings (JPG) when the day is rebuilt from the NVR. Taking PNG whenever any
+        existed rebuilt a gappy live day from its gappy live frames and ignored the complete
+        recordings set; use whichever set has more frames (PNG on a tie, as before).
+        """
+        png = list(images_path.glob(f"{camera_safe_name}_*.png"))
+        jpg = list(images_path.glob(f"{camera_safe_name}_*.jpg"))
+        if len(jpg) > len(png):
+            return jpg, "jpg"
+        return png, "png"
 
     async def _create_timelapse_for_camera_interval(
         self,
